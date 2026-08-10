@@ -113,13 +113,19 @@ struct DenyRuleSchema {
 
 // --- PolicyEngine ---
 
-/// The built-in default policy YAML that denies git commit and git push.
+/// The built-in default policy YAML that denies critical git operations.
 pub const DEFAULT_POLICY_YAML: &str = r#"rules:
   - deny:
       command: "git"
       subcommands:
         - "commit"
         - "push"
+        - "merge"
+        - "rebase"
+        - "reset"
+        - "cherry-pick"
+        - "revert"
+        - "tag"
 "#;
 
 /// The policy engine that holds loaded deny rules and evaluates commands.
@@ -433,7 +439,7 @@ mod tests {
         let engine = PolicyEngine::default_policy();
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].command, "git");
-        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push"]);
+        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
         assert!(engine.is_default);
     }
 
@@ -442,7 +448,7 @@ mod tests {
         let engine = PolicyEngine::load(None).unwrap();
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].command, "git");
-        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push"]);
+        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
         assert!(engine.is_default);
     }
 
@@ -488,7 +494,7 @@ mod tests {
             Decision::Deny {
                 rule: DenyRule {
                     command: "git".to_string(),
-                    subcommands: vec!["commit".to_string(), "push".to_string()],
+                    subcommands: vec!["commit".to_string(), "push".to_string(), "merge".to_string(), "rebase".to_string(), "reset".to_string(), "cherry-pick".to_string(), "revert".to_string(), "tag".to_string()],
                 },
                 matched_subcommand: "push".to_string(),
             }

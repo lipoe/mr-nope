@@ -51,11 +51,11 @@ mod tests {
     fn test_default_policy_displays_correct_rules() {
         let engine = PolicyEngine::default_policy();
 
-        // The default policy should have exactly one rule: git [commit, push]
+        // The default policy should have exactly one rule: git [commit, push, merge, rebase, reset, cherry-pick, revert, tag]
         assert!(engine.is_default);
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].command, "git");
-        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push"]);
+        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
     }
 
     #[test]

@@ -13,7 +13,7 @@ fn default_adapter() -> CursorAdapter {
 // ============================================================
 
 /// Validates: Requirements 5.2, 12.4
-/// For "git push" with default rule `git [commit, push]`:
+/// For "git push" with default rule `git [commit, push, merge, rebase, reset, cherry-pick, revert, tag]`:
 /// User message shows the specific matched subcommand, plus the full rule.
 #[test]
 fn test_deny_message_user_format_git_push() {
@@ -24,14 +24,14 @@ fn test_deny_message_user_format_git_push() {
     let user_msg = response.user_message.unwrap();
     assert_eq!(
         user_msg,
-        "🚫 Mr. Nope blocked: git push (matched deny rule: git [commit, push]). \
+        "🚫 Mr. Nope blocked: git push (matched deny rule: git [commit, push, merge, rebase, reset, cherry-pick, revert, tag]). \
          Note: this protection applies only to AI agent execution via hooks, \
          not to direct terminal usage."
     );
 }
 
 /// Validates: Requirements 5.2, 12.4
-/// For "git commit" with default rule `git [commit, push]`:
+/// For "git commit" with default rule `git [commit, push, merge, rebase, reset, cherry-pick, revert, tag]`:
 /// User message shows "git commit" as the blocked command.
 #[test]
 fn test_deny_message_user_format_git_commit() {
@@ -42,7 +42,7 @@ fn test_deny_message_user_format_git_commit() {
     let user_msg = response.user_message.unwrap();
     assert_eq!(
         user_msg,
-        "🚫 Mr. Nope blocked: git commit (matched deny rule: git [commit, push]). \
+        "🚫 Mr. Nope blocked: git commit (matched deny rule: git [commit, push, merge, rebase, reset, cherry-pick, revert, tag]). \
          Note: this protection applies only to AI agent execution via hooks, \
          not to direct terminal usage."
     );
@@ -108,7 +108,7 @@ fn test_deny_message_mcp_execution_format() {
 
     let user_msg = response.user_message.unwrap();
     assert!(user_msg.starts_with("🚫 Mr. Nope blocked: git push"));
-    assert!(user_msg.contains("(matched deny rule: git [commit, push])"));
+    assert!(user_msg.contains("(matched deny rule: git [commit, push, merge, rebase, reset, cherry-pick, revert, tag])"));
     assert!(user_msg.contains("Note: this protection applies only to AI agent execution via hooks, not to direct terminal usage."));
 
     let agent_msg = response.agent_message.unwrap();

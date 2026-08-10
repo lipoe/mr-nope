@@ -237,7 +237,7 @@ fn test_load_none_path_returns_default_policy() {
     let engine = PolicyEngine::load(None).unwrap();
     assert_eq!(engine.rules.len(), 1);
     assert_eq!(engine.rules[0].command, "git");
-    assert_eq!(engine.rules[0].subcommands, vec!["commit", "push"]);
+    assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
     assert!(engine.is_default);
 }
 
@@ -247,7 +247,7 @@ fn test_load_nonexistent_file_returns_default_policy() {
     let engine = PolicyEngine::load(Some(Path::new("/nonexistent/path/.mr-nope.yml"))).unwrap();
     assert_eq!(engine.rules.len(), 1);
     assert_eq!(engine.rules[0].command, "git");
-    assert_eq!(engine.rules[0].subcommands, vec!["commit", "push"]);
+    assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
     assert!(engine.is_default);
 }
 
