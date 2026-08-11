@@ -77,7 +77,7 @@ jobs:
           $sizeBytes = (Get-Item $binaryPath).Length
           $sizeMB = [math]::Round($sizeBytes / 1MB, 2)
           Write-Host "Binary size: ${sizeMB} MB ($sizeBytes bytes)"
-          $limitBytes = $env:BINARY_SIZE_LIMIT_MB * 1MB
+          $limitBytes = [int]$env:BINARY_SIZE_LIMIT_MB * 1MB
           if ($sizeBytes -gt $limitBytes) {
             Write-Error "Binary size ${sizeMB} MB exceeds limit of $env:BINARY_SIZE_LIMIT_MB MB"
             exit 1
