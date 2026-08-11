@@ -1,7 +1,7 @@
 // Property tests for the Policy Engine
 // Properties 1, 2, 12, 13, 14, 21
 
-use mr_nope::engine::{Decision, DenyRule, PolicyEngine, PolicyEvaluator};
+use mr_nope::engine::{Decision, DenyRule, PolicyEngine, PolicyEvaluator, PolicyMode};
 use mr_nope::parser::ParsedCommand;
 use proptest::prelude::*;
 
@@ -178,6 +178,7 @@ proptest! {
                 subcommands: subcmds.clone(),
             }],
             is_default: false,
+            mode: PolicyMode::Replace,
         };
 
         let parsed = ParsedCommand {
@@ -215,6 +216,7 @@ proptest! {
                 subcommands: subcmds.clone(),
             }],
             is_default: false,
+            mode: PolicyMode::Replace,
         };
 
         let parsed = ParsedCommand {
@@ -255,6 +257,7 @@ proptest! {
                 subcommands: subcmds.clone(),
             }],
             is_default: false,
+            mode: PolicyMode::Replace,
         };
 
         let parsed = ParsedCommand {
@@ -287,6 +290,7 @@ proptest! {
                 subcommands: subcmds.clone(),
             }],
             is_default: false,
+            mode: PolicyMode::Replace,
         };
 
         let parsed = ParsedCommand {

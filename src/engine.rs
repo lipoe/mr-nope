@@ -91,11 +91,31 @@ impl fmt::Display for PolicyError {
 
 impl std::error::Error for PolicyError {}
 
+// --- Policy Mode ---
+
+/// Defines how a project-level policy interacts with the global/default policy.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PolicyMode {
+    /// Project policy completely replaces global/default (default behavior).
+    Replace,
+    /// Project policy extends the global policy.
+    /// If the same command appears in both, the project's subcommands replace the global's for that command.
+    /// Commands only in global remain. Commands only in project are added.
+    Extend,
+}
+
+impl Default for PolicyMode {
+    fn default() -> Self {
+        PolicyMode::Replace
+    }
+}
+
 // --- Serde deserialization structs for YAML policy file ---
 
 /// Top-level YAML schema for the policy file.
 #[derive(Debug, Deserialize)]
 struct PolicyFileSchema {
+    mode: Option<String>,
     rules: Option<Vec<RuleEntrySchema>>,
 }
 
@@ -134,6 +154,7 @@ pub const DEFAULT_POLICY_YAML: &str = r#"rules:
 pub struct PolicyEngine {
     pub rules: Vec<DenyRule>,
     pub is_default: bool,
+    pub mode: PolicyMode,
 }
 
 impl PolicyEngine {
@@ -203,6 +224,12 @@ impl PolicyEngine {
         let schema: PolicyFileSchema = serde_yaml::from_str(yaml_content)
             .map_err(|e| PolicyError::InvalidYaml(e.to_string()))?;
 
+        // Parse the mode field (defaults to Replace if absent or unrecognized)
+        let mode = match schema.mode.as_deref() {
+            Some("extend") => PolicyMode::Extend,
+            _ => PolicyMode::Replace,
+        };
+
         let rules_entries = schema.rules.ok_or(PolicyError::MissingRulesArray)?;
 
         let mut rules = Vec::new();
@@ -245,7 +272,51 @@ impl PolicyEngine {
             });
         }
 
-        Ok(PolicyEngine { rules, is_default })
+        Ok(PolicyEngine {
+            rules,
+            is_default,
+            mode,
+        })
+    }
+
+    /// Merge a base policy with an extension policy.
+    ///
+    /// For each rule in extension:
+    /// - If base has a rule with the same command, replace its subcommands with extension's.
+    /// - If the command is new, add it to the result.
+    /// Base rules not mentioned in extension stay as-is.
+    ///
+    /// The resulting engine has `is_default = false` and `mode = Replace` (merged result is final).
+    pub fn merge(base: &PolicyEngine, extension: &PolicyEngine) -> PolicyEngine {
+        let mut merged_rules: Vec<DenyRule> = Vec::new();
+
+        // Start with base rules, replacing subcommands if extension has same command
+        for base_rule in &base.rules {
+            if let Some(ext_rule) = extension.rules.iter().find(|r| r.command == base_rule.command)
+            {
+                // Extension overrides the subcommands for this command
+                merged_rules.push(DenyRule {
+                    command: base_rule.command.clone(),
+                    subcommands: ext_rule.subcommands.clone(),
+                });
+            } else {
+                // Keep the base rule as-is
+                merged_rules.push(base_rule.clone());
+            }
+        }
+
+        // Add commands that only exist in extension (not in base)
+        for ext_rule in &extension.rules {
+            if !base.rules.iter().any(|r| r.command == ext_rule.command) {
+                merged_rules.push(ext_rule.clone());
+            }
+        }
+
+        PolicyEngine {
+            rules: merged_rules,
+            is_default: false,
+            mode: PolicyMode::Replace,
+        }
     }
 }
 
@@ -628,6 +699,7 @@ mod tests {
                 },
             ],
             is_default: false,
+            mode: PolicyMode::Replace,
         };
 
         // rm -rf should be denied by second rule
@@ -654,6 +726,7 @@ mod tests {
         let engine = PolicyEngine {
             rules: vec![],
             is_default: false,
+            mode: PolicyMode::Replace,
         };
         let cmd = ParsedCommand {
             command: "git".to_string(),
@@ -678,6 +751,7 @@ mod tests {
                 },
             ],
             is_default: false,
+            mode: PolicyMode::Replace,
         };
 
         let cmd = ParsedCommand {
@@ -909,5 +983,276 @@ mod tests {
             let result = engine.evaluate(cmd);
             assert_eq!(result.decision, Decision::Allow, "Expected ALLOW for: {}", cmd);
         }
+    }
+
+    // --- PolicyMode and Merge tests ---
+
+    #[test]
+    fn test_load_from_str_default_mode_is_replace() {
+        let yaml = r#"rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#;
+        let engine = PolicyEngine::load_from_str(yaml, false).unwrap();
+        assert_eq!(engine.mode, PolicyMode::Replace);
+    }
+
+    #[test]
+    fn test_load_from_str_explicit_replace_mode() {
+        let yaml = r#"mode: replace
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#;
+        let engine = PolicyEngine::load_from_str(yaml, false).unwrap();
+        assert_eq!(engine.mode, PolicyMode::Replace);
+    }
+
+    #[test]
+    fn test_load_from_str_extend_mode() {
+        let yaml = r#"mode: extend
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#;
+        let engine = PolicyEngine::load_from_str(yaml, false).unwrap();
+        assert_eq!(engine.mode, PolicyMode::Extend);
+    }
+
+    #[test]
+    fn test_load_from_str_unknown_mode_defaults_to_replace() {
+        let yaml = r#"mode: unknown_value
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#;
+        let engine = PolicyEngine::load_from_str(yaml, false).unwrap();
+        assert_eq!(engine.mode, PolicyMode::Replace);
+    }
+
+    #[test]
+    fn test_merge_adds_new_commands_from_extension() {
+        let base = PolicyEngine {
+            rules: vec![DenyRule {
+                command: "git".to_string(),
+                subcommands: vec!["push".to_string(), "commit".to_string()],
+            }],
+            is_default: true,
+            mode: PolicyMode::Replace,
+        };
+
+        let extension = PolicyEngine {
+            rules: vec![DenyRule {
+                command: "docker".to_string(),
+                subcommands: vec!["push".to_string()],
+            }],
+            is_default: false,
+            mode: PolicyMode::Extend,
+        };
+
+        let merged = PolicyEngine::merge(&base, &extension);
+        assert_eq!(merged.rules.len(), 2);
+        assert_eq!(merged.rules[0].command, "git");
+        assert_eq!(merged.rules[0].subcommands, vec!["push", "commit"]);
+        assert_eq!(merged.rules[1].command, "docker");
+        assert_eq!(merged.rules[1].subcommands, vec!["push"]);
+        assert!(!merged.is_default);
+    }
+
+    #[test]
+    fn test_merge_replaces_subcommands_for_same_command() {
+        let base = PolicyEngine {
+            rules: vec![DenyRule {
+                command: "git".to_string(),
+                subcommands: vec!["push".to_string(), "commit".to_string(), "merge".to_string()],
+            }],
+            is_default: true,
+            mode: PolicyMode::Replace,
+        };
+
+        let extension = PolicyEngine {
+            rules: vec![DenyRule {
+                command: "git".to_string(),
+                subcommands: vec!["push".to_string(), "rebase".to_string()],
+            }],
+            is_default: false,
+            mode: PolicyMode::Extend,
+        };
+
+        let merged = PolicyEngine::merge(&base, &extension);
+        assert_eq!(merged.rules.len(), 1);
+        assert_eq!(merged.rules[0].command, "git");
+        // Extension's subcommands replace base's for the same command
+        assert_eq!(merged.rules[0].subcommands, vec!["push", "rebase"]);
+    }
+
+    #[test]
+    fn test_merge_preserves_base_rules_not_in_extension() {
+        let base = PolicyEngine {
+            rules: vec![
+                DenyRule {
+                    command: "git".to_string(),
+                    subcommands: vec!["push".to_string()],
+                },
+                DenyRule {
+                    command: "rm".to_string(),
+                    subcommands: vec!["-rf".to_string()],
+                },
+            ],
+            is_default: true,
+            mode: PolicyMode::Replace,
+        };
+
+        let extension = PolicyEngine {
+            rules: vec![DenyRule {
+                command: "docker".to_string(),
+                subcommands: vec!["push".to_string()],
+            }],
+            is_default: false,
+            mode: PolicyMode::Extend,
+        };
+
+        let merged = PolicyEngine::merge(&base, &extension);
+        assert_eq!(merged.rules.len(), 3);
+        assert_eq!(merged.rules[0].command, "git");
+        assert_eq!(merged.rules[0].subcommands, vec!["push"]);
+        assert_eq!(merged.rules[1].command, "rm");
+        assert_eq!(merged.rules[1].subcommands, vec!["-rf"]);
+        assert_eq!(merged.rules[2].command, "docker");
+        assert_eq!(merged.rules[2].subcommands, vec!["push"]);
+    }
+
+    #[test]
+    fn test_merge_combined_replace_and_add() {
+        let base = PolicyEngine {
+            rules: vec![
+                DenyRule {
+                    command: "git".to_string(),
+                    subcommands: vec!["push".to_string(), "commit".to_string()],
+                },
+                DenyRule {
+                    command: "rm".to_string(),
+                    subcommands: vec!["-rf".to_string()],
+                },
+            ],
+            is_default: true,
+            mode: PolicyMode::Replace,
+        };
+
+        let extension = PolicyEngine {
+            rules: vec![
+                DenyRule {
+                    command: "git".to_string(),
+                    subcommands: vec!["push".to_string(), "merge".to_string()],
+                },
+                DenyRule {
+                    command: "docker".to_string(),
+                    subcommands: vec!["push".to_string()],
+                },
+            ],
+            is_default: false,
+            mode: PolicyMode::Extend,
+        };
+
+        let merged = PolicyEngine::merge(&base, &extension);
+        assert_eq!(merged.rules.len(), 3);
+        // git subcommands replaced by extension
+        assert_eq!(merged.rules[0].command, "git");
+        assert_eq!(merged.rules[0].subcommands, vec!["push", "merge"]);
+        // rm stays from base
+        assert_eq!(merged.rules[1].command, "rm");
+        assert_eq!(merged.rules[1].subcommands, vec!["-rf"]);
+        // docker added from extension
+        assert_eq!(merged.rules[2].command, "docker");
+        assert_eq!(merged.rules[2].subcommands, vec!["push"]);
+    }
+
+    #[test]
+    fn test_merge_empty_extension_preserves_base() {
+        let base = PolicyEngine::default_policy();
+        let extension = PolicyEngine {
+            rules: vec![],
+            is_default: false,
+            mode: PolicyMode::Extend,
+        };
+
+        let merged = PolicyEngine::merge(&base, &extension);
+        assert_eq!(merged.rules.len(), base.rules.len());
+        assert_eq!(merged.rules[0].command, "git");
+    }
+
+    #[test]
+    fn test_merge_empty_base_uses_extension_only() {
+        let base = PolicyEngine {
+            rules: vec![],
+            is_default: true,
+            mode: PolicyMode::Replace,
+        };
+
+        let extension = PolicyEngine {
+            rules: vec![DenyRule {
+                command: "npm".to_string(),
+                subcommands: vec!["publish".to_string()],
+            }],
+            is_default: false,
+            mode: PolicyMode::Extend,
+        };
+
+        let merged = PolicyEngine::merge(&base, &extension);
+        assert_eq!(merged.rules.len(), 1);
+        assert_eq!(merged.rules[0].command, "npm");
+    }
+
+    #[test]
+    fn test_merged_engine_evaluates_correctly() {
+        let base = PolicyEngine {
+            rules: vec![DenyRule {
+                command: "git".to_string(),
+                subcommands: vec!["push".to_string(), "commit".to_string()],
+            }],
+            is_default: true,
+            mode: PolicyMode::Replace,
+        };
+
+        let extension = PolicyEngine {
+            rules: vec![
+                DenyRule {
+                    command: "git".to_string(),
+                    subcommands: vec!["push".to_string(), "merge".to_string()],
+                },
+                DenyRule {
+                    command: "docker".to_string(),
+                    subcommands: vec!["push".to_string()],
+                },
+            ],
+            is_default: false,
+            mode: PolicyMode::Extend,
+        };
+
+        let merged = PolicyEngine::merge(&base, &extension);
+
+        // git push - still denied (in extension's git subcommands)
+        let result = merged.evaluate("git push");
+        assert!(matches!(result.decision, Decision::Deny { .. }));
+
+        // git merge - now denied (added by extension)
+        let result = merged.evaluate("git merge");
+        assert!(matches!(result.decision, Decision::Deny { .. }));
+
+        // git commit - no longer denied (extension replaced base git subcommands, commit not included)
+        let result = merged.evaluate("git commit");
+        assert_eq!(result.decision, Decision::Allow);
+
+        // docker push - denied (new rule from extension)
+        let result = merged.evaluate("docker push");
+        assert!(matches!(result.decision, Decision::Deny { .. }));
     }
 }

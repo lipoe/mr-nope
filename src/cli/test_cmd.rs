@@ -112,6 +112,7 @@ mod tests {
                 subcommands: vec!["publish".to_string()],
             }],
             is_default: false,
+            mode: crate::engine::PolicyMode::Replace,
         };
 
         let exit_code = run_test_with_engine(&engine);
@@ -136,6 +137,7 @@ mod tests {
                 },
             ],
             is_default: false,
+            mode: crate::engine::PolicyMode::Replace,
         };
 
         let exit_code = run_test_with_engine(&engine);
@@ -148,6 +150,7 @@ mod tests {
         let engine = PolicyEngine {
             rules: vec![],
             is_default: false,
+            mode: crate::engine::PolicyMode::Replace,
         };
 
         let exit_code = run_test_with_engine(&engine);
@@ -166,6 +169,7 @@ mod tests {
                 subcommands: vec!["push".to_string(), "login".to_string()],
             }],
             is_default: false,
+            mode: crate::engine::PolicyMode::Replace,
         };
 
         // Verify "docker push" and "docker login" are both denied

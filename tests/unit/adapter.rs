@@ -59,9 +59,10 @@ fn test_deny_message_agent_format_git_push() {
     let agent_msg = response.agent_message.unwrap();
     assert_eq!(
         agent_msg,
-        "Command 'git push' is blocked by Mr. Nope policy. \
-         This deny rule prevents git push operations. \
-         Do not attempt to bypass this restriction."
+        "BLOCKED: The user has explicitly forbidden the action 'git push'. \
+         You must not execute this command or attempt to bypass this restriction. \
+         The user configured Mr. Nope to deny 'git push' operations. \
+         Use 'mr-nope policy' to see all active deny rules."
     );
 }
 
@@ -76,9 +77,10 @@ fn test_deny_message_agent_format_git_commit() {
     let agent_msg = response.agent_message.unwrap();
     assert_eq!(
         agent_msg,
-        "Command 'git commit' is blocked by Mr. Nope policy. \
-         This deny rule prevents git commit operations. \
-         Do not attempt to bypass this restriction."
+        "BLOCKED: The user has explicitly forbidden the action 'git commit'. \
+         You must not execute this command or attempt to bypass this restriction. \
+         The user configured Mr. Nope to deny 'git commit' operations. \
+         Use 'mr-nope policy' to see all active deny rules."
     );
 }
 
@@ -112,8 +114,8 @@ fn test_deny_message_mcp_execution_format() {
     assert!(user_msg.contains("Note: this protection applies only to AI agent execution via hooks, not to direct terminal usage."));
 
     let agent_msg = response.agent_message.unwrap();
-    assert!(agent_msg.starts_with("Command 'git push' is blocked by Mr. Nope policy."));
-    assert!(agent_msg.contains("Do not attempt to bypass this restriction."));
+    assert!(agent_msg.contains("BLOCKED: The user has explicitly forbidden the action 'git push'"));
+    assert!(agent_msg.contains("You must not execute this command"));
 }
 
 /// Validates: Requirements 5.2
@@ -145,9 +147,10 @@ rules:
     let agent_msg = response.agent_message.unwrap();
     assert_eq!(
         agent_msg,
-        "Command 'npm unpublish' is blocked by Mr. Nope policy. \
-         This deny rule prevents npm unpublish operations. \
-         Do not attempt to bypass this restriction."
+        "BLOCKED: The user has explicitly forbidden the action 'npm unpublish'. \
+         You must not execute this command or attempt to bypass this restriction. \
+         The user configured Mr. Nope to deny 'npm unpublish' operations. \
+         Use 'mr-nope policy' to see all active deny rules."
     );
 }
 

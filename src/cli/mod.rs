@@ -63,7 +63,11 @@ pub enum Commands {
     Test,
 
     /// Display the active policy rules
-    Policy,
+    Policy {
+        /// Show a specific policy scope: "global" to show global policy, omit for effective merged policy
+        #[arg(long)]
+        scope: Option<String>,
+    },
 
     /// Hook entry point: reads JSON from stdin, writes decision to stdout
     Evaluate,

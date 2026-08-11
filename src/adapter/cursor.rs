@@ -153,9 +153,10 @@ impl CursorAdapter {
         );
 
         let agent_message = format!(
-            "Command '{} {}' is blocked by Mr. Nope policy. \
-             This deny rule prevents {} {} operations. \
-             Do not attempt to bypass this restriction.",
+            "BLOCKED: The user has explicitly forbidden the action '{} {}'. \
+             You must not execute this command or attempt to bypass this restriction. \
+             The user configured Mr. Nope to deny '{} {}' operations. \
+             Use 'mr-nope policy' to see all active deny rules.",
             rule.command,
             matched_subcommand,
             rule.command,

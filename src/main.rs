@@ -49,8 +49,8 @@ fn main() {
             let exit_code = mr_nope::cli::test_cmd::run_test();
             std::process::exit(exit_code);
         }
-        Commands::Policy => {
-            mr_nope::cli::policy::run_policy_command();
+        Commands::Policy { scope } => {
+            mr_nope::cli::policy::run_policy_command(scope.as_deref());
         }
         Commands::Evaluate => {
             mr_nope::cli::evaluate::run_evaluate();

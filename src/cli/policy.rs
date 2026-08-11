@@ -1,18 +1,66 @@
 // Mr. Nope - CLI policy command
 // Displays active policy rules and indicates whether the default or custom policy is active.
 
-use crate::cli::evaluate::discover_policy_from_cwd;
+use crate::cli::evaluate::{discover_policy_from_cwd, get_user_policy_path};
 use crate::engine::PolicyEngine;
 use std::path::PathBuf;
 
 /// Run the `mr-nope policy` command.
 ///
-/// Discovers the policy from `.mr-nope.yml` in the current working directory
-/// (if present), otherwise falls back to the built-in default policy. Displays
-/// the active deny rules and indicates which policy source is active.
-pub fn run_policy_command() {
-    let (engine, policy_path) = discover_policy_from_cwd();
-    display_policy(&engine, policy_path.as_ref());
+/// Without `--scope`: shows the effective merged policy (project + global/default).
+/// With `--scope global`: shows the global policy file location and contents.
+pub fn run_policy_command(scope: Option<&str>) {
+    match scope {
+        Some("global") => display_global_policy(),
+        Some(other) => {
+            eprintln!("Unknown scope '{}'. Supported: global", other);
+            std::process::exit(1);
+        }
+        None => {
+            let (engine, policy_path) = discover_policy_from_cwd();
+            display_policy(&engine, policy_path.as_ref());
+        }
+    }
+}
+
+/// Display information about the global policy.
+fn display_global_policy() {
+    let global_path = get_user_policy_path();
+    println!("Global policy location: {}", global_path.display());
+    println!();
+
+    if global_path.exists() {
+        match PolicyEngine::load(Some(global_path.as_path())) {
+            Ok(engine) => {
+                println!("Global Policy Rules:");
+                println!();
+                if engine.rules.is_empty() {
+                    println!("No deny rules configured (all commands allowed).");
+                } else {
+                    println!("Deny Rules:");
+                    for rule in &engine.rules {
+                        let subcommands = rule.subcommands.join(", ");
+                        println!("  \u{2022} {} [{}]", rule.command, subcommands);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error loading global policy: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        println!("No global policy file found.");
+        println!("To create one, add a policy.yml at the location above.");
+        println!();
+        println!("Example:");
+        println!("  rules:");
+        println!("    - deny:");
+        println!("        command: \"git\"");
+        println!("        subcommands:");
+        println!("          - \"push\"");
+        println!("          - \"merge\"");
+    }
 }
 
 /// Display the active policy rules.
@@ -72,6 +120,7 @@ mod tests {
                 },
             ],
             is_default: false,
+            mode: crate::engine::PolicyMode::Replace,
         };
 
         assert!(!engine.is_default);
@@ -89,6 +138,7 @@ mod tests {
         let engine = PolicyEngine {
             rules: vec![],
             is_default: false,
+            mode: crate::engine::PolicyMode::Replace,
         };
 
         assert!(engine.rules.is_empty());
@@ -110,6 +160,7 @@ mod tests {
                 subcommands: vec!["push".to_string()],
             }],
             is_default: false,
+            mode: crate::engine::PolicyMode::Replace,
         };
         assert!(!engine.is_default);
         // display_policy would print "Active Policy (custom: ...):" for this
