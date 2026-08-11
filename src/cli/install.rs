@@ -6,7 +6,12 @@ use std::path::PathBuf;
 use std::{env, fs, io};
 
 /// The command that Mr. Nope registers in hook entries.
-const MR_NOPE_HOOK_COMMAND: &str = "mr-nope evaluate";
+/// At install time, this is replaced with the absolute path to the binary.
+const MR_NOPE_HOOK_COMMAND_SUFFIX: &str = "evaluate";
+
+/// The marker used to identify Mr. Nope entries during uninstall.
+/// We check if the command string ends with "mr-nope evaluate" or contains "mr-nope".
+const MR_NOPE_MARKER: &str = "mr-nope";
 
 /// Supported adapter names.
 const SUPPORTED_ADAPTERS: &[&str] = &["cursor"];
@@ -91,9 +96,9 @@ fn get_cursor_hooks_path(scope: InstallScope) -> Result<PathBuf, InstallError> {
         InstallScope::Global => {
             #[cfg(target_os = "windows")]
             {
-                let appdata = env::var("APPDATA")
-                    .map_err(|_| InstallError::PathResolution("APPDATA environment variable not set".to_string()))?;
-                Ok(PathBuf::from(appdata).join("Cursor").join("hooks.json"))
+                let userprofile = env::var("USERPROFILE")
+                    .map_err(|_| InstallError::PathResolution("USERPROFILE environment variable not set".to_string()))?;
+                Ok(PathBuf::from(userprofile).join(".cursor").join("hooks.json"))
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -120,6 +125,9 @@ pub fn install(adapter: &str, scope: InstallScope) -> Result<(), InstallError> {
 
     let hooks_path = get_hooks_path(adapter, scope)?;
 
+    // Determine the absolute path to the current binary for the hook command
+    let hook_command = get_hook_command()?;
+
     // Read existing hooks.json or start with empty structure
     let mut hooks_value = if hooks_path.exists() {
         let content = fs::read_to_string(&hooks_path)?;
@@ -140,7 +148,7 @@ pub fn install(adapter: &str, scope: InstallScope) -> Result<(), InstallError> {
         hooks_value["version"] = json!(1);
     }
 
-    let hook_entry = json!({ "command": MR_NOPE_HOOK_COMMAND });
+    let hook_entry = json!({ "command": hook_command });
 
     // Add to beforeShellExecution
     add_hook_entry(&mut hooks_value, "beforeShellExecution", &hook_entry);
@@ -162,8 +170,29 @@ pub fn install(adapter: &str, scope: InstallScope) -> Result<(), InstallError> {
         "✓ Mr. Nope installed for adapter '{}' at {} scope.",
         adapter, scope
     );
+    println!("  Hook command: {}", hook_command);
 
     Ok(())
+}
+
+/// Get the hook command string using the absolute path to the current binary.
+///
+/// Returns something like `"C:\Users\linus\.cargo\bin\mr-nope.exe evaluate"`
+/// or `"/usr/local/bin/mr-nope evaluate"`.
+fn get_hook_command() -> Result<String, InstallError> {
+    let binary_path = env::current_exe()
+        .map_err(|e| InstallError::PathResolution(format!("could not determine binary path: {}", e)))?;
+
+    let canonical = binary_path.canonicalize()
+        .unwrap_or(binary_path);
+
+    let path_str = canonical.display().to_string();
+
+    // On Windows, canonicalize returns UNC paths (\\?\C:\...) — strip the prefix
+    #[cfg(target_os = "windows")]
+    let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
+
+    Ok(format!("{} {}", path_str, MR_NOPE_HOOK_COMMAND_SUFFIX))
 }
 
 /// Uninstall Mr. Nope hooks for the given adapter from the specified scope.
@@ -217,13 +246,30 @@ fn add_hook_entry(hooks_value: &mut Value, hook_name: &str, entry: &Value) {
             .or_insert_with(|| json!([]));
 
         if let Some(arr) = arr.as_array_mut() {
-            // Check if the entry already exists (avoid duplicates)
+            // Check if a mr-nope entry already exists (avoid duplicates)
             let already_exists = arr.iter().any(|existing| {
-                existing.get("command").and_then(|c| c.as_str()) == Some(MR_NOPE_HOOK_COMMAND)
+                existing
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.contains(MR_NOPE_MARKER))
+                    .unwrap_or(false)
             });
 
             if !already_exists {
                 arr.push(entry.clone());
+            } else {
+                // Update existing entry with the new command (in case path changed)
+                for existing in arr.iter_mut() {
+                    if existing
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.contains(MR_NOPE_MARKER))
+                        .unwrap_or(false)
+                    {
+                        *existing = entry.clone();
+                        break;
+                    }
+                }
             }
         }
     }
@@ -238,7 +284,11 @@ fn remove_hook_entry(hooks_value: &mut Value, hook_name: &str) {
     if let Some(hooks) = hooks_obj {
         if let Some(arr) = hooks.get_mut(hook_name).and_then(|v| v.as_array_mut()) {
             arr.retain(|existing| {
-                existing.get("command").and_then(|c| c.as_str()) != Some(MR_NOPE_HOOK_COMMAND)
+                !existing
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.contains(MR_NOPE_MARKER))
+                    .unwrap_or(false)
             });
         }
     }
@@ -248,6 +298,10 @@ fn remove_hook_entry(hooks_value: &mut Value, hook_name: &str) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Test-only constant simulating what install would produce.
+    /// In real usage, this would be an absolute path like "/usr/local/bin/mr-nope evaluate".
+    const MR_NOPE_HOOK_COMMAND: &str = "mr-nope evaluate";
 
     #[test]
     fn test_validate_adapter_cursor_ok() {

@@ -29,17 +29,19 @@ pub struct AdapterStatus {
 }
 
 /// The marker string that indicates Mr. Nope is installed in a hooks.json file.
-const MR_NOPE_MARKER: &str = "mr-nope evaluate";
+/// We check for "mr-nope" which appears in both the binary name and the command.
+const MR_NOPE_MARKER: &str = "mr-nope";
 
 /// Returns the global hooks.json path for the Cursor adapter.
 ///
-/// - macOS/Linux: `~/.cursor/hooks.json`
-/// - Windows: `%APPDATA%\Cursor\hooks.json`
+/// All platforms: `~/.cursor/hooks.json`
+/// - Windows: `%USERPROFILE%\.cursor\hooks.json`
+/// - macOS/Linux: `$HOME/.cursor/hooks.json`
 pub fn cursor_global_hooks_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA").ok().map(|appdata| {
-            PathBuf::from(appdata).join("Cursor").join("hooks.json")
+        std::env::var("USERPROFILE").ok().map(|home| {
+            PathBuf::from(home).join(".cursor").join("hooks.json")
         })
     }
 

@@ -47,22 +47,24 @@ fn test_install_with_project_creates_hooks_json() {
     // Should have version
     assert_eq!(parsed["version"], 1);
 
-    // Should have beforeShellExecution with mr-nope evaluate
+    // Should have beforeShellExecution with mr-nope in the command
     let shell_hooks = parsed["hooks"]["beforeShellExecution"].as_array().unwrap();
     assert!(
         shell_hooks
             .iter()
-            .any(|h| h["command"] == "mr-nope evaluate"),
-        "beforeShellExecution should contain 'mr-nope evaluate'"
+            .any(|h| h["command"].as_str().unwrap_or("").contains("mr-nope") && h["command"].as_str().unwrap_or("").contains("evaluate")),
+        "beforeShellExecution should contain a 'mr-nope ... evaluate' entry, got: {:?}",
+        shell_hooks
     );
 
-    // Should have beforeMCPExecution with mr-nope evaluate
+    // Should have beforeMCPExecution with mr-nope in the command
     let mcp_hooks = parsed["hooks"]["beforeMCPExecution"].as_array().unwrap();
     assert!(
         mcp_hooks
             .iter()
-            .any(|h| h["command"] == "mr-nope evaluate"),
-        "beforeMCPExecution should contain 'mr-nope evaluate'"
+            .any(|h| h["command"].as_str().unwrap_or("").contains("mr-nope") && h["command"].as_str().unwrap_or("").contains("evaluate")),
+        "beforeMCPExecution should contain a 'mr-nope ... evaluate' entry, got: {:?}",
+        mcp_hooks
     );
 }
 
@@ -108,12 +110,12 @@ fn test_install_preserves_existing_hooks() {
     let shell_hooks = parsed["hooks"]["beforeShellExecution"].as_array().unwrap();
     assert_eq!(shell_hooks.len(), 2, "should have both hooks");
     assert_eq!(shell_hooks[0]["command"], "other-tool check");
-    assert_eq!(shell_hooks[1]["command"], "mr-nope evaluate");
+    assert!(shell_hooks[1]["command"].as_str().unwrap().contains("mr-nope"));
 
     let mcp_hooks = parsed["hooks"]["beforeMCPExecution"].as_array().unwrap();
     assert_eq!(mcp_hooks.len(), 2, "should have both hooks");
     assert_eq!(mcp_hooks[0]["command"], "security-scanner verify");
-    assert_eq!(mcp_hooks[1]["command"], "mr-nope evaluate");
+    assert!(mcp_hooks[1]["command"].as_str().unwrap().contains("mr-nope"));
 }
 
 #[test]
