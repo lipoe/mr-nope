@@ -2,6 +2,7 @@
 // Loads YAML policy files and matches commands against deny rules.
 
 use crate::normalizer::Normalizer;
+use crate::self_protection;
 use crate::parser::{ParsedCommand, Parser};
 use serde::Deserialize;
 use std::fmt;
@@ -278,6 +279,44 @@ impl PolicyEvaluator for PolicyEngine {
         if normalized_text.trim().is_empty() {
             return EvaluationResult {
                 decision: Decision::Allow,
+                raw_input: raw_command.to_string(),
+                normalized: normalized_text,
+                parsed_commands: vec![],
+            };
+        }
+
+        // 2.5 Self-protection: block any command that modifies Mr. Nope's own files
+        if let Some(protected_pattern) = self_protection::check_self_protection(&normalized_text) {
+            return EvaluationResult {
+                decision: Decision::Deny {
+                    rule: DenyRule {
+                        command: "__self_protection__".to_string(),
+                        subcommands: vec![self_protection::SELF_PROTECTION_REASON.to_string()],
+                    },
+                    matched_subcommand: format!(
+                        "write to protected path '{}'",
+                        protected_pattern
+                    ),
+                },
+                raw_input: raw_command.to_string(),
+                normalized: normalized_text,
+                parsed_commands: vec![],
+            };
+        }
+
+        // Also check the raw input (in case normalization stripped relevant info)
+        if let Some(protected_pattern) = self_protection::check_self_protection(raw_command) {
+            return EvaluationResult {
+                decision: Decision::Deny {
+                    rule: DenyRule {
+                        command: "__self_protection__".to_string(),
+                        subcommands: vec![self_protection::SELF_PROTECTION_REASON.to_string()],
+                    },
+                    matched_subcommand: format!(
+                        "write to protected path '{}'",
+                        protected_pattern
+                    ),
+                },
                 raw_input: raw_command.to_string(),
                 normalized: normalized_text,
                 parsed_commands: vec![],

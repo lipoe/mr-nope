@@ -6,3 +6,4 @@ pub mod cli;
 pub mod engine;
 pub mod normalizer;
 pub mod parser;
+pub mod self_protection;
