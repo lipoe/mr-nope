@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mr-nope/mr-nope"
+    "url": "https://github.com/lipoe/mr-nope"
   },
   "bin": {
     "mr-nope": "./bin/mr-nope.js"

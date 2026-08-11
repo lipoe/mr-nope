@@ -31,7 +31,7 @@ function getBinaryPath() {
     console.error(
       `Error: Unsupported platform "${platformKey}".\n` +
         `mr-nope supports the following platforms: ${supported}\n` +
-        `Please visit https://github.com/mr-nope/mr-nope/releases for manual installation.`
+        `Please visit https://github.com/lipoe/mr-nope/releases for manual installation.`
     );
     process.exit(1);
   }

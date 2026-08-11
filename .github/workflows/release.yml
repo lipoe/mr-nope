@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: mr-nope
+            asset_name: mr-nope-linux-x64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary: mr-nope
+            asset_name: mr-nope-darwin-x64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: mr-nope
+            asset_name: mr-nope-darwin-arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: mr-nope.exe
+            asset_name: mr-nope-win32-x64.exe
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.target }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "${{ matrix.asset_name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/mr-nope-linux-x64/mr-nope-linux-x64
+            artifacts/mr-nope-darwin-x64/mr-nope-darwin-x64
+            artifacts/mr-nope-darwin-arm64/mr-nope-darwin-arm64
+            artifacts/mr-nope-win32-x64.exe/mr-nope-win32-x64.exe
+          generate_release_notes: true

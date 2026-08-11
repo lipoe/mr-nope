@@ -14,7 +14,7 @@ const SUPPORTED_PLATFORMS = {
   "win32-x64": "mr-nope-win32-x64.exe",
 };
 
-const REPO = "mr-nope/mr-nope";
+const REPO = "lipoe/mr-nope";
 
 function getPlatformKey() {
   const platform = process.platform;

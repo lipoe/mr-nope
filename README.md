@@ -35,7 +35,7 @@ npx @mr-nope/cli install cursor
 ### From source
 
 ```bash
-git clone https://github.com/mr-nope/mr-nope
+git clone https://github.com/lipoe/mr-nope
 cd mr-nope
 cargo build --release
 ./target/release/mr-nope install cursor
