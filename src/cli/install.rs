@@ -6,8 +6,13 @@ use std::path::PathBuf;
 use std::{env, fs, io};
 
 /// The command that Mr. Nope registers in hook entries.
-/// At install time, this is replaced with the absolute path to the binary.
+/// At install time, this is replaced with the absolute path to the binary
+/// (Unix) or a Windows `.cmd` stdin-forwarding wrapper.
 const MR_NOPE_HOOK_COMMAND_SUFFIX: &str = "evaluate";
+
+/// Filename of the Windows Cursor hook wrapper that forwards stdin to the binary.
+#[cfg(target_os = "windows")]
+const WINDOWS_CURSOR_WRAPPER_NAME: &str = "mr-nope-evaluate.cmd";
 
 /// The marker used to identify Mr. Nope entries during uninstall.
 /// We check if the command string ends with "mr-nope evaluate" or contains "mr-nope".
@@ -125,8 +130,8 @@ pub fn install(adapter: &str, scope: InstallScope) -> Result<(), InstallError> {
 
     let hooks_path = get_hooks_path(adapter, scope)?;
 
-    // Determine the absolute path to the current binary for the hook command
-    let hook_command = get_hook_command()?;
+    // Determine the hook command (direct binary on Unix; .cmd wrapper on Windows Cursor)
+    let hook_command = prepare_hook_command(adapter, scope)?;
 
     // Read existing hooks.json or start with empty structure
     let mut hooks_value = if hooks_path.exists() {
@@ -175,24 +180,120 @@ pub fn install(adapter: &str, scope: InstallScope) -> Result<(), InstallError> {
     Ok(())
 }
 
+/// Resolve `current_exe`, canonicalize, and strip Windows `\\?\` prefix.
+fn resolve_binary_path() -> Result<PathBuf, InstallError> {
+    let binary_path = env::current_exe().map_err(|e| {
+        InstallError::PathResolution(format!("could not determine binary path: {}", e))
+    })?;
+
+    let canonical = binary_path.canonicalize().unwrap_or(binary_path);
+
+    #[cfg(target_os = "windows")]
+    {
+        let path_str = canonical.display().to_string();
+        let stripped = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+        Ok(PathBuf::from(stripped))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(canonical)
+    }
+}
+
+/// Build the hook command string for hooks.json, creating a Windows wrapper when needed.
+fn prepare_hook_command(adapter: &str, scope: InstallScope) -> Result<String, InstallError> {
+    let binary_path = resolve_binary_path()?;
+
+    #[cfg(target_os = "windows")]
+    {
+        if adapter == "cursor" {
+            return install_windows_cursor_wrapper(scope, &binary_path);
+        }
+    }
+
+    // Direct binary invocation (Unix, and non-Cursor adapters on Windows)
+    let _ = scope;
+    Ok(format_direct_hook_command(&binary_path))
+}
+
+/// Quote a path for use in a shell/cmd command line.
+fn quote_path_for_command(path: &str) -> String {
+    if path.contains(' ') || path.contains('"') || cfg!(target_os = "windows") {
+        format!("\"{}\"", path.replace('"', ""))
+    } else {
+        path.to_string()
+    }
+}
+
+/// Direct hook command: `"<binary>" evaluate` (quoted on Windows / when needed).
+fn format_direct_hook_command(binary_path: &std::path::Path) -> String {
+    let path_str = binary_path.display().to_string();
+    format!(
+        "{} {}",
+        quote_path_for_command(&path_str),
+        MR_NOPE_HOOK_COMMAND_SUFFIX
+    )
+}
+
+/// On Windows, Cursor often fails to pipe stdin into a raw `.exe` hook command.
+/// Write a tiny `.cmd` wrapper (cmd.exe forwards stdin) and register that instead.
+#[cfg(target_os = "windows")]
+fn install_windows_cursor_wrapper(
+    scope: InstallScope,
+    binary_path: &std::path::Path,
+) -> Result<String, InstallError> {
+    let hooks_json_path = get_cursor_hooks_path(scope)?;
+    let cursor_dir = hooks_json_path.parent().ok_or_else(|| {
+        InstallError::PathResolution("hooks.json has no parent directory".to_string())
+    })?;
+    let scripts_dir = cursor_dir.join("hooks");
+    fs::create_dir_all(&scripts_dir)?;
+
+    let wrapper_path = scripts_dir.join(WINDOWS_CURSOR_WRAPPER_NAME);
+    let binary_str = binary_path.display().to_string().replace('"', "");
+    let wrapper_contents = format!(
+        "@echo off\r\n\"{bin}\" {suffix}\r\n",
+        bin = binary_str,
+        suffix = MR_NOPE_HOOK_COMMAND_SUFFIX
+    );
+    fs::write(&wrapper_path, wrapper_contents)?;
+
+    // Cursor runs user hooks from ~/.cursor and project hooks from the project root.
+    let command = match scope {
+        InstallScope::Global => format!("./hooks/{}", WINDOWS_CURSOR_WRAPPER_NAME),
+        InstallScope::Project => format!(".cursor/hooks/{}", WINDOWS_CURSOR_WRAPPER_NAME),
+    };
+
+    Ok(command)
+}
+
+/// Remove the Windows Cursor stdin-forwarding wrapper if present.
+#[cfg(target_os = "windows")]
+fn remove_windows_cursor_wrapper(scope: InstallScope) -> Result<(), InstallError> {
+    let hooks_json_path = get_cursor_hooks_path(scope)?;
+    if let Some(cursor_dir) = hooks_json_path.parent() {
+        let wrapper_path = cursor_dir.join("hooks").join(WINDOWS_CURSOR_WRAPPER_NAME);
+        if wrapper_path.exists() {
+            fs::remove_file(&wrapper_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn remove_windows_cursor_wrapper(_scope: InstallScope) -> Result<(), InstallError> {
+    Ok(())
+}
+
 /// Get the hook command string using the absolute path to the current binary.
 ///
-/// Returns something like `"C:\Users\linus\.cargo\bin\mr-nope.exe evaluate"`
-/// or `"/usr/local/bin/mr-nope evaluate"`.
+/// Prefer [`prepare_hook_command`] for install — this remains for tests/callers
+/// that only need a direct binary invocation string.
+#[allow(dead_code)]
 fn get_hook_command() -> Result<String, InstallError> {
-    let binary_path = env::current_exe()
-        .map_err(|e| InstallError::PathResolution(format!("could not determine binary path: {}", e)))?;
-
-    let canonical = binary_path.canonicalize()
-        .unwrap_or(binary_path);
-
-    let path_str = canonical.display().to_string();
-
-    // On Windows, canonicalize returns UNC paths (\\?\C:\...) — strip the prefix
-    #[cfg(target_os = "windows")]
-    let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
-
-    Ok(format!("{} {}", path_str, MR_NOPE_HOOK_COMMAND_SUFFIX))
+    let binary_path = resolve_binary_path()?;
+    Ok(format_direct_hook_command(&binary_path))
 }
 
 /// Uninstall Mr. Nope hooks for the given adapter from the specified scope.
@@ -225,6 +326,10 @@ pub fn uninstall(adapter: &str, scope: InstallScope) -> Result<(), InstallError>
     let json_string = serde_json::to_string_pretty(&hooks_value)
         .map_err(|e| InstallError::JsonParse(e.to_string()))?;
     fs::write(&hooks_path, json_string)?;
+
+    if adapter == "cursor" {
+        remove_windows_cursor_wrapper(scope)?;
+    }
 
     println!(
         "✓ Mr. Nope uninstalled for adapter '{}' from {} scope.",
@@ -671,5 +776,48 @@ mod tests {
 
         let mcp_arr = final_value["hooks"]["beforeMCPExecution"].as_array().unwrap();
         assert_eq!(mcp_arr.len(), 0);
+    }
+
+    #[test]
+    fn test_quote_path_for_command_quotes_spaces() {
+        let quoted = quote_path_for_command(r"C:\Program Files\mr-nope.exe");
+        assert!(quoted.starts_with('"') && quoted.ends_with('"'));
+        assert!(quoted.contains("Program Files"));
+    }
+
+    #[test]
+    fn test_format_direct_hook_command_includes_evaluate() {
+        let cmd = format_direct_hook_command(std::path::Path::new("/usr/local/bin/mr-nope"));
+        assert!(cmd.contains("evaluate"));
+        assert!(cmd.contains("mr-nope"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_cursor_wrapper_written_for_project_scope() {
+        let tmp = TempDir::new().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+
+        let binary = tmp.path().join("mr-nope-win32-x64.exe");
+        fs::write(&binary, b"fake").unwrap();
+
+        let command = install_windows_cursor_wrapper(InstallScope::Project, &binary).unwrap();
+        assert_eq!(command, ".cursor/hooks/mr-nope-evaluate.cmd");
+
+        let wrapper = tmp
+            .path()
+            .join(".cursor")
+            .join("hooks")
+            .join("mr-nope-evaluate.cmd");
+        assert!(wrapper.exists());
+        let contents = fs::read_to_string(&wrapper).unwrap();
+        assert!(contents.contains("evaluate"));
+        assert!(contents.contains("mr-nope-win32-x64.exe"));
+
+        remove_windows_cursor_wrapper(InstallScope::Project).unwrap();
+        assert!(!wrapper.exists());
+
+        env::set_current_dir(original).unwrap();
     }
 }

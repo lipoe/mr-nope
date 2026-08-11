@@ -31,12 +31,21 @@ pub fn run_evaluate() {
         return;
     }
 
+    // Cursor on Windows may prefix stdin with a UTF-8 BOM; strip it before parsing.
+    let input_str = strip_utf8_bom(&input_str);
+
     // 2. Attempt to deserialize as HookInput
-    let hook_input: HookInput = match serde_json::from_str(&input_str) {
+    let hook_input: HookInput = match serde_json::from_str(input_str) {
         Ok(input) => input,
-        Err(_) => {
-            // 3. Deserialization fails → deny (fail-closed)
-            let response = deny_malformed("malformed JSON input could not be parsed");
+        Err(err) => {
+            // 3. Deserialization fails → deny (fail-closed), with diagnostics
+            let preview: String = input_str.chars().take(80).collect();
+            let response = deny_malformed(&format!(
+                "malformed JSON input could not be parsed (stdin_len={}, error={}, preview={:?})",
+                input_str.len(),
+                err,
+                preview
+            ));
             print_response(&response);
             return;
         }
@@ -53,6 +62,11 @@ pub fn run_evaluate() {
 
     // 7. Serialize and write to stdout
     print_response(&response);
+}
+
+/// Strip a leading UTF-8 BOM (`U+FEFF`) if present.
+fn strip_utf8_bom(input: &str) -> &str {
+    input.strip_prefix('\u{feff}').unwrap_or(input)
 }
 
 /// Create a deny response for malformed/unreadable input (fail-closed).
@@ -448,5 +462,17 @@ rules:
         // git push should be ALLOWED (default to replace mode, only docker push is denied)
         let result = engine.evaluate("git push");
         assert_eq!(result.decision, crate::engine::Decision::Allow);
+    }
+
+    #[test]
+    fn test_strip_utf8_bom_removes_prefix() {
+        let with_bom = "\u{feff}{\"permission\":\"allow\"}";
+        assert_eq!(strip_utf8_bom(with_bom), "{\"permission\":\"allow\"}");
+    }
+
+    #[test]
+    fn test_strip_utf8_bom_noop_without_bom() {
+        let plain = "{\"hook_event_name\":\"beforeShellExecution\"}";
+        assert_eq!(strip_utf8_bom(plain), plain);
     }
 }

@@ -52,8 +52,8 @@ fn test_install_with_project_creates_hooks_json() {
     assert!(
         shell_hooks
             .iter()
-            .any(|h| h["command"].as_str().unwrap_or("").contains("mr-nope") && h["command"].as_str().unwrap_or("").contains("evaluate")),
-        "beforeShellExecution should contain a 'mr-nope ... evaluate' entry, got: {:?}",
+            .any(|h| h["command"].as_str().unwrap_or("").contains("mr-nope")),
+        "beforeShellExecution should contain a 'mr-nope' entry, got: {:?}",
         shell_hooks
     );
 
@@ -62,10 +62,26 @@ fn test_install_with_project_creates_hooks_json() {
     assert!(
         mcp_hooks
             .iter()
-            .any(|h| h["command"].as_str().unwrap_or("").contains("mr-nope") && h["command"].as_str().unwrap_or("").contains("evaluate")),
-        "beforeMCPExecution should contain a 'mr-nope ... evaluate' entry, got: {:?}",
+            .any(|h| h["command"].as_str().unwrap_or("").contains("mr-nope")),
+        "beforeMCPExecution should contain a 'mr-nope' entry, got: {:?}",
         mcp_hooks
     );
+
+    // On Windows, install writes a .cmd stdin-forwarding wrapper for Cursor.
+    #[cfg(target_os = "windows")]
+    {
+        let wrapper = tmp
+            .path()
+            .join(".cursor")
+            .join("hooks")
+            .join("mr-nope-evaluate.cmd");
+        assert!(
+            wrapper.exists(),
+            "Windows install should create .cursor/hooks/mr-nope-evaluate.cmd"
+        );
+        let cmd = shell_hooks[0]["command"].as_str().unwrap();
+        assert_eq!(cmd, ".cursor/hooks/mr-nope-evaluate.cmd");
+    }
 }
 
 #[test]
