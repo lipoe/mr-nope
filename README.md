@@ -26,10 +26,18 @@ Same input always produces the same result.
 
 ## Installation
 
-### Via npx (recommended)
+### Via npm (recommended)
 
 ```bash
-npx @mr-nope/cli install cursor
+npm install -g @mr-nope/cli
+mr-nope install cursor --global
+```
+
+### Via Cargo (if you have Rust installed)
+
+```bash
+cargo install --git https://github.com/lipoe/mr-nope
+mr-nope install cursor --global
 ```
 
 ### From source
@@ -37,8 +45,8 @@ npx @mr-nope/cli install cursor
 ```bash
 git clone https://github.com/lipoe/mr-nope
 cd mr-nope
-cargo build --release
-./target/release/mr-nope install cursor
+cargo install --path .
+mr-nope install cursor --global
 ```
 
 ### Scopes
