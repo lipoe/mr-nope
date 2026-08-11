@@ -303,7 +303,3 @@ src/
 │   └── evaluate.rs    # Hook entry point + policy discovery + merge
 └── main.rs            # Binary entry point
 ```
-
-## License
-
-MIT
