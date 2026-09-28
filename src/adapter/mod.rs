@@ -2,6 +2,8 @@
 // Defines the Adapter trait and re-exports adapter implementations.
 
 pub mod cursor;
+pub mod integration;
+pub mod kiro;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

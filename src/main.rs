@@ -52,8 +52,9 @@ fn main() {
         Commands::Policy { scope } => {
             mr_nope::cli::policy::run_policy_command(scope.as_deref());
         }
-        Commands::Evaluate => {
-            mr_nope::cli::evaluate::run_evaluate();
+        Commands::Evaluate { adapter } => {
+            let exit_code = mr_nope::cli::evaluate::run_evaluate(&adapter);
+            std::process::exit(exit_code);
         }
     }
 }

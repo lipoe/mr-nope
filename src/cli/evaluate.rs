@@ -3,8 +3,8 @@
 // Also implements the `evaluate` subcommand: reads JSON from stdin, routes to adapter,
 // writes JSON response to stdout. Fail-closed: unknown hook events and malformed input → deny.
 
-use crate::adapter::cursor::CursorAdapter;
-use crate::adapter::{Adapter, HookInput, HookResponse, Permission};
+use crate::adapter::integration::{self, AgentIntegration};
+use crate::adapter::{HookResponse, Permission};
 use crate::engine::{PolicyEngine, PolicyMode};
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -12,56 +12,59 @@ use std::path::PathBuf;
 /// The expected policy file name.
 pub const POLICY_FILE_NAME: &str = ".mr-nope.yml";
 
-/// Run the evaluate subcommand (hook entry point).
+/// Run the evaluate subcommand (hook entry point), returning the process exit
+/// code.
 ///
-/// 1. Read all of stdin as a string.
-/// 2. Attempt to deserialize as `HookInput`.
-/// 3. If deserialization fails → write a deny response JSON to stdout (fail-closed).
-/// 4. Discover the policy file path from `workspace_roots` in the input.
-/// 5. Create a `CursorAdapter` with the loaded `PolicyEngine`.
-/// 6. Call `adapter.handle_hook(&input)`.
-/// 7. Serialize the `HookResponse` to JSON and write to stdout.
-pub fn run_evaluate() {
-    // 1. Read all of stdin
-    let mut input_str = String::new();
-    if io::stdin().read_to_string(&mut input_str).is_err() {
-        // Cannot read stdin → fail-closed: deny
-        let response = deny_malformed("failed to read input from stdin");
-        print_response(&response);
-        return;
-    }
-
-    // Cursor on Windows may prefix stdin with a UTF-8 BOM; strip it before parsing.
-    let input_str = strip_utf8_bom(&input_str);
-
-    // 2. Attempt to deserialize as HookInput
-    let hook_input: HookInput = match serde_json::from_str(input_str) {
-        Ok(input) => input,
-        Err(err) => {
-            // 3. Deserialization fails → deny (fail-closed), with diagnostics
-            let preview: String = input_str.chars().take(80).collect();
-            let response = deny_malformed(&format!(
-                "malformed JSON input could not be parsed (stdin_len={}, error={}, preview={:?})",
-                input_str.len(),
-                err,
-                preview
-            ));
-            print_response(&response);
-            return;
+/// This flow is agent-agnostic: it looks up the [`AgentIntegration`] for the
+/// requested adapter and delegates the parts that differ between agents —
+/// parsing stdin (`parse_stdin`), choosing the runtime adapter
+/// (`build_adapter`), and transporting the decision (`emit_decision`). The
+/// shared middle (read stdin, strip BOM, discover policy, evaluate) lives here
+/// once. Fail-closed: an unknown adapter, unreadable stdin, or malformed input
+/// all deny.
+pub fn run_evaluate(adapter: &str) -> i32 {
+    // Resolve the integration. An unknown adapter fails closed via the safest
+    // default transport (Cursor's stdout JSON).
+    let integration = match integration::integration(adapter) {
+        Ok(i) => i,
+        Err(_) => {
+            let fallback = fallback_integration();
+            return fallback
+                .emit_decision(&deny_malformed(&format!("unknown adapter '{}'", adapter)));
         }
     };
 
-    // 4. Discover policy from workspace_roots
+    // Read all of stdin.
+    let mut input_str = String::new();
+    if io::stdin().read_to_string(&mut input_str).is_err() {
+        return integration.emit_decision(&deny_malformed("failed to read input from stdin"));
+    }
+
+    // Some agents (e.g. Cursor on Windows) prefix stdin with a UTF-8 BOM.
+    let input_str = strip_utf8_bom(&input_str);
+
+    // Parse the agent's payload into the shared HookInput.
+    let hook_input = match integration.parse_stdin(input_str) {
+        Ok(input) => input,
+        Err(reason) => {
+            return integration.emit_decision(&deny_malformed(&reason));
+        }
+    };
+
+    // Discover the effective policy from the workspace roots.
     let (engine, _policy_path) = discover_policy(&hook_input.workspace_roots);
 
-    // 5. Create CursorAdapter with the loaded PolicyEngine
-    let adapter = CursorAdapter::new(engine);
+    // Evaluate through the agent's runtime adapter and emit the decision using
+    // the agent's transport (stdout JSON, exit code, etc.).
+    let runtime_adapter = integration.build_adapter(engine);
+    let response = runtime_adapter.handle_hook(&hook_input);
+    integration.emit_decision(&response)
+}
 
-    // 6. Call adapter.handle_hook
-    let response = adapter.handle_hook(&hook_input);
-
-    // 7. Serialize and write to stdout
-    print_response(&response);
+/// The integration used when the requested adapter is unknown. Cursor's
+/// stdout-JSON transport is the safest default for surfacing the denial.
+fn fallback_integration() -> Box<dyn AgentIntegration> {
+    integration::integration("cursor").expect("cursor integration always present")
 }
 
 /// Strip a leading UTF-8 BOM (`U+FEFF`) if present.
@@ -88,19 +91,6 @@ fn deny_malformed(reason: &str) -> HookResponse {
         permission: Permission::Deny,
         user_message: Some(user_message),
         agent_message: Some(agent_message),
-    }
-}
-
-/// Serialize and print a HookResponse as JSON to stdout.
-fn print_response(response: &HookResponse) {
-    match serde_json::to_string(response) {
-        Ok(json) => println!("{}", json),
-        Err(_) => {
-            // Last resort: if we can't serialize the response, output a hardcoded deny JSON
-            println!(
-                r#"{{"permission":"deny","userMessage":"🚫 Mr. Nope: DENIED — internal serialization error.","agentMessage":"Mr. Nope denied execution due to an internal error."}}"#
-            );
-        }
     }
 }
 

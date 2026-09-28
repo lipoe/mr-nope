@@ -30,7 +30,7 @@ pub struct Cli {
 pub enum Commands {
     /// Install Mr. Nope hooks for an AI coding agent adapter
     Install {
-        /// Adapter name (e.g., cursor)
+        /// Adapter name (e.g., cursor, kiro)
         adapter: String,
 
         /// Install at the project level (current directory only)
@@ -44,7 +44,7 @@ pub enum Commands {
 
     /// Uninstall Mr. Nope hooks for an AI coding agent adapter
     Uninstall {
-        /// Adapter name (e.g., cursor)
+        /// Adapter name (e.g., cursor, kiro)
         adapter: String,
 
         /// Uninstall from the project level (current directory only)
@@ -69,6 +69,15 @@ pub enum Commands {
         scope: Option<String>,
     },
 
-    /// Hook entry point: reads JSON from stdin, writes decision to stdout
-    Evaluate,
+    /// Hook entry point: reads JSON from stdin, emits the decision
+    ///
+    /// Output format depends on the adapter:
+    /// - cursor (default): writes a JSON HookResponse to stdout.
+    /// - kiro: uses the process exit code (0 = allow, 2 = block) and writes
+    ///   the block reason to stderr, per Kiro's PreToolUse hook contract.
+    Evaluate {
+        /// Adapter whose hook contract to speak (e.g., cursor, kiro).
+        #[arg(long, default_value = "cursor")]
+        adapter: String,
+    },
 }

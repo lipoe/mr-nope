@@ -1,8 +1,11 @@
 // Mr. Nope - Status command
-// Detects installed adapters by checking hook configuration file locations.
+//
+// Reports install state for every registered agent integration. This module
+// contains no per-adapter logic: it iterates over the integration registry and
+// asks each one where its hook configuration lives, then checks for a Mr. Nope
+// marker there. Adding a new agent never touches this file.
 
-use std::fs;
-use std::path::PathBuf;
+use crate::adapter::integration::{self, is_installed_at, AgentIntegration, InstallScope};
 
 /// Represents the installation state of an adapter at a particular scope.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,127 +31,53 @@ pub struct AdapterStatus {
     pub project: InstallState,
 }
 
-/// The marker string that indicates Mr. Nope is installed in a hooks.json file.
-/// We check for "mr-nope" which appears in both the binary name and the command.
-const MR_NOPE_MARKER: &str = "mr-nope";
-
-/// Returns the global hooks.json path for the Cursor adapter.
+/// Resolve the install state of one integration at one scope.
 ///
-/// All platforms: `~/.cursor/hooks.json`
-/// - Windows: `%USERPROFILE%\.cursor\hooks.json`
-/// - macOS/Linux: `$HOME/.cursor/hooks.json`
-pub fn cursor_global_hooks_path() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("USERPROFILE").ok().map(|home| {
-            PathBuf::from(home).join(".cursor").join("hooks.json")
-        })
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        dirs_path_home().map(|home| home.join(".cursor").join("hooks.json"))
+/// Any path-resolution failure is treated as "not installed" rather than an
+/// error — status is best-effort reporting.
+fn state_at(integration: &dyn AgentIntegration, scope: InstallScope) -> InstallState {
+    match integration.hook_config_path(scope) {
+        Ok(path) if is_installed_at(&path) => InstallState::Installed,
+        _ => InstallState::NotInstalled,
     }
 }
 
-/// Returns the project-level hooks.json path for the Cursor adapter.
-///
-/// This is `.cursor/hooks.json` relative to the current working directory.
-pub fn cursor_project_hooks_path() -> Option<PathBuf> {
-    std::env::current_dir()
-        .ok()
-        .map(|cwd| cwd.join(".cursor").join("hooks.json"))
-}
-
-/// Check if a hooks.json file at the given path contains a Mr. Nope entry.
-///
-/// A hook is "installed" if the file exists and contains `"mr-nope evaluate"`.
-pub fn is_installed_at(path: &PathBuf) -> InstallState {
-    match fs::read_to_string(path) {
-        Ok(content) => {
-            if content.contains(MR_NOPE_MARKER) {
-                InstallState::Installed
-            } else {
-                InstallState::NotInstalled
-            }
-        }
-        Err(_) => InstallState::NotInstalled,
-    }
-}
-
-/// Get the status of the Cursor adapter at both global and project scopes.
-pub fn get_cursor_status() -> AdapterStatus {
-    let global = cursor_global_hooks_path()
-        .map(|p| is_installed_at(&p))
-        .unwrap_or(InstallState::NotInstalled);
-
-    let project = cursor_project_hooks_path()
-        .map(|p| is_installed_at(&p))
-        .unwrap_or(InstallState::NotInstalled);
-
+/// Compute the status of a single integration at both scopes.
+fn status_of(integration: &dyn AgentIntegration) -> AdapterStatus {
     AdapterStatus {
-        name: "cursor".to_string(),
-        global,
-        project,
+        name: integration.name().to_string(),
+        global: state_at(integration, InstallScope::Global),
+        project: state_at(integration, InstallScope::Project),
     }
+}
+
+/// Compute the status of every registered adapter.
+pub fn get_all_statuses() -> Vec<AdapterStatus> {
+    integration::all_integrations()
+        .iter()
+        .map(|i| status_of(i.as_ref()))
+        .collect()
 }
 
 /// Execute the status command: display installation state and security scope.
 pub fn run_status() {
-    let cursor_status = get_cursor_status();
-
     println!("Mr. Nope Status:");
     println!();
-    println!("Adapter: {}", cursor_status.name);
-    println!("  Global: {}", cursor_status.global);
-    println!("  Project: {}", cursor_status.project);
-    println!();
+    for status in get_all_statuses() {
+        println!("Adapter: {}", status.name);
+        println!("  Global: {}", status.global);
+        println!("  Project: {}", status.project);
+        println!();
+    }
     println!("SECURITY SCOPE:");
     println!("• Mr. Nope only prevents execution via supported hook paths of the integrated AI coding agent.");
     println!("• Mr. Nope does not prevent a human user from running forbidden commands directly in a terminal.");
     println!("• Mr. Nope is not a system-wide sandbox or a replacement for OS-level access controls.");
 }
 
-/// Helper to get the user's home directory without adding a dependency.
-/// Uses the HOME environment variable on Unix and USERPROFILE on Windows.
-#[cfg(not(target_os = "windows"))]
-fn dirs_path_home() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_is_installed_at_nonexistent_file() {
-        let path = PathBuf::from("/nonexistent/path/hooks.json");
-        assert_eq!(is_installed_at(&path), InstallState::NotInstalled);
-    }
-
-    #[test]
-    fn test_is_installed_at_file_without_marker() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("hooks.json");
-        let mut file = fs::File::create(&path).unwrap();
-        writeln!(file, r#"{{"version": 1, "hooks": {{}}}}"#).unwrap();
-        assert_eq!(is_installed_at(&path), InstallState::NotInstalled);
-    }
-
-    #[test]
-    fn test_is_installed_at_file_with_marker() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("hooks.json");
-        let mut file = fs::File::create(&path).unwrap();
-        writeln!(
-            file,
-            r#"{{"version": 1, "hooks": {{"beforeShellExecution": [{{"command": "mr-nope evaluate"}}]}}}}"#
-        )
-        .unwrap();
-        assert_eq!(is_installed_at(&path), InstallState::Installed);
-    }
 
     #[test]
     fn test_install_state_display() {
@@ -157,70 +86,11 @@ mod tests {
     }
 
     #[test]
-    fn test_status_detects_installed_hooks_in_temp_hooks_json() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("hooks.json");
-        let mut file = fs::File::create(&path).unwrap();
-        writeln!(
-            file,
-            r#"{{
-                "version": 1,
-                "hooks": {{
-                    "beforeShellExecution": [{{"command": "mr-nope evaluate"}}],
-                    "beforeMCPExecution": [{{"command": "mr-nope evaluate"}}]
-                }}
-            }}"#
-        )
-        .unwrap();
-        assert_eq!(is_installed_at(&path), InstallState::Installed);
-    }
-
-    #[test]
-    fn test_status_reports_not_installed_when_file_does_not_exist() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("nonexistent").join("hooks.json");
-        // File does not exist
-        assert_eq!(is_installed_at(&path), InstallState::NotInstalled);
-    }
-
-    #[test]
-    fn test_status_reports_not_installed_when_file_exists_but_no_mr_nope() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("hooks.json");
-        let mut file = fs::File::create(&path).unwrap();
-        // File exists with other hooks but not mr-nope
-        writeln!(
-            file,
-            r#"{{
-                "version": 1,
-                "hooks": {{
-                    "beforeShellExecution": [{{"command": "other-tool run"}}],
-                    "beforeMCPExecution": [{{"command": "security-check verify"}}]
-                }}
-            }}"#
-        )
-        .unwrap();
-        assert_eq!(is_installed_at(&path), InstallState::NotInstalled);
-    }
-
-    #[test]
-    fn test_status_detects_marker_in_mcp_hook_only() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("hooks.json");
-        let mut file = fs::File::create(&path).unwrap();
-        // mr-nope marker only in beforeMCPExecution
-        writeln!(
-            file,
-            r#"{{
-                "version": 1,
-                "hooks": {{
-                    "beforeShellExecution": [{{"command": "other-tool run"}}],
-                    "beforeMCPExecution": [{{"command": "mr-nope evaluate"}}]
-                }}
-            }}"#
-        )
-        .unwrap();
-        assert_eq!(is_installed_at(&path), InstallState::Installed);
+    fn test_get_all_statuses_covers_registered_adapters() {
+        let statuses = get_all_statuses();
+        let names: Vec<&str> = statuses.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"cursor"));
+        assert!(names.contains(&"kiro"));
     }
 
     #[test]

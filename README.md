@@ -4,7 +4,7 @@ Deterministic guardrail tool that prevents AI coding agents from executing forbi
 
 ## Why?
 
-AI coding agents (Cursor, Claude Code, Codex, etc.) can execute shell commands and tool calls on your behalf. Sometimes you want hard limits — operations that should *never* happen regardless of what the LLM decides. Mr. Nope gives you a deterministic deny-list that can't be talked around, reasoned away, or bypassed through prompt injection.
+AI coding agents (Cursor, Kiro, Claude Code, Codex, etc.) can execute shell commands and tool calls on your behalf. Sometimes you want hard limits — operations that should *never* happen regardless of what the LLM decides. Mr. Nope gives you a deterministic deny-list that can't be talked around, reasoned away, or bypassed through prompt injection.
 
 The default policy blocks `git commit`, `git push`, `git merge`, `git rebase`, `git reset`, `git cherry-pick`, `git revert`, and `git tag` — keeping version control decisions in human hands.
 
@@ -54,14 +54,16 @@ mr-nope install cursor --global
 ```bash
 # Global (user-level, applies to all projects)
 mr-nope install cursor --global
+mr-nope install kiro --global
 
 # Project-level (current directory only)
 mr-nope install cursor --project
+mr-nope install kiro --project
 ```
 
 ## Usage
 
-Once installed, Mr. Nope runs automatically via Cursor's hook system. No manual invocation needed.
+Once installed, Mr. Nope runs automatically via your agent's hook system (Cursor or Kiro). No manual invocation needed.
 
 ### CLI Commands
 
@@ -251,7 +253,7 @@ Mr. Nope detects forbidden commands even when disguised through these techniques
 **Mr. Nope is not a security sandbox.** It is a policy enforcement layer that depends on the host AI coding agent's hook implementation.
 
 - Enforcement relies on the agent honoring the deny response. Mr. Nope guarantees deterministic decision-making but cannot guarantee that the host agent will respect the deny.
-- It only intercepts operations via supported hook paths (`beforeShellExecution`, `beforeMCPExecution`).
+- It only intercepts operations via each agent's supported hook paths (Cursor: `beforeShellExecution`, `beforeMCPExecution`; Kiro: `PreToolUse`).
 - It does not prevent a human user from running forbidden commands directly.
 - It is not a replacement for OS-level access controls, sandboxing, or permission systems.
 - Maximum 3 levels of URL decoding and shell nesting are analyzed. Deeper obfuscation passes through as partially decoded.
@@ -269,15 +271,32 @@ Requires Node.js 18+ for the npx wrapper. The binary itself has no runtime depen
 
 ## Supported Adapters
 
-- **Cursor** — via `beforeShellExecution` and `beforeMCPExecution` hooks
+- **Cursor** — via `beforeShellExecution` and `beforeMCPExecution` hooks. Decisions are returned as a JSON response on stdout.
+- **Kiro** — via a `PreToolUse` hook that matches shell-execution and file-write tools (`execute_bash`, `shell`, `fs_write`, `write`). Decisions are returned through the process exit code (`0` = allow, `2` = block), with the block reason on stderr — matching [Kiro's hook contract](https://kiro.dev/docs/hooks/).
 
-More adapters can be added by implementing the `Adapter` trait without modifying core logic.
+Both agents share the same deterministic policy pipeline (Normalizer → Parser → Policy Engine); only the integration details differ.
+
+### How adapters are structured
+
+Each agent is described by a single implementation of the `AgentIntegration` trait
+(`src/adapter/integration.rs`). The trait captures only the axes that genuinely
+differ between agents:
+
+| Axis | Cursor | Kiro |
+|---|---|---|
+| Hook config location | `.cursor/hooks.json` (shared, merged) | `.kiro/hooks/mr-nope.json` (dedicated file) |
+| Decision transport | JSON response on stdout | exit code + stderr |
+| `tool_input` shape | JSON *string* | JSON *object* |
+
+The install / uninstall / status / evaluate flows are fully agent-agnostic — they
+look up an integration and delegate. **Adding a new agent means adding one
+`AgentIntegration` implementation and registering it; no shared flow is touched.**
 
 ## Development
 
 ```bash
 cargo build          # Build debug binary
-cargo test           # Run all 447 tests
+cargo test           # Run the full test suite (500+ tests)
 cargo test --test properties   # Property-based tests only
 cargo test --test integration  # End-to-end tests only
 cargo build --release          # Optimized release build
@@ -292,14 +311,16 @@ src/
 ├── engine.rs          # Policy loading, matching, evaluation, merge logic
 ├── self_protection.rs # Hardcoded protection of config files
 ├── adapter/
-│   ├── mod.rs         # Adapter trait
-│   └── cursor.rs      # Cursor hook handler
+│   ├── mod.rs         # Adapter trait (runtime hook evaluation)
+│   ├── integration.rs # AgentIntegration trait + registry (install/transport/parsing per agent)
+│   ├── cursor.rs      # Cursor runtime hook handler
+│   └── kiro.rs        # Kiro runtime hook handler
 ├── cli/
 │   ├── mod.rs         # CLI argument parsing (clap)
-│   ├── install.rs     # Install/uninstall commands
-│   ├── status.rs      # Status display
+│   ├── install.rs     # Install/uninstall (agent-agnostic facade over integrations)
+│   ├── status.rs      # Status display (iterates over all integrations)
 │   ├── test_cmd.rs    # Policy self-test
 │   ├── policy.rs      # Policy display (with --scope global)
-│   └── evaluate.rs    # Hook entry point + policy discovery + merge
+│   └── evaluate.rs    # Hook entry point + policy discovery + merge (delegates transport)
 └── main.rs            # Binary entry point
 ```
