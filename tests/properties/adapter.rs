@@ -28,7 +28,10 @@ fn safe_command_string() -> impl Strategy<Value = String> {
 /// Generate a valid YAML policy string with arbitrary rules.
 fn valid_policy_yaml() -> impl Strategy<Value = String> {
     prop::collection::vec(
-        (command_token(), prop::collection::vec(command_token(), 1..=4)),
+        (
+            command_token(),
+            prop::collection::vec(command_token(), 1..=4),
+        ),
         1..=5,
     )
     .prop_map(|rules| {

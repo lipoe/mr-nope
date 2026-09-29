@@ -36,13 +36,17 @@ fn compound_operator() -> impl Strategy<Value = String> {
 
 /// Generate a simple command segment (binary + optional args).
 fn simple_command_segment() -> impl Strategy<Value = String> {
-    (command_token(), prop::collection::vec(command_token(), 0..3)).prop_map(|(cmd, args)| {
-        if args.is_empty() {
-            cmd
-        } else {
-            format!("{} {}", cmd, args.join(" "))
-        }
-    })
+    (
+        command_token(),
+        prop::collection::vec(command_token(), 0..3),
+    )
+        .prop_map(|(cmd, args)| {
+            if args.is_empty() {
+                cmd
+            } else {
+                format!("{} {}", cmd, args.join(" "))
+            }
+        })
 }
 
 /// Generate a shell binary name.

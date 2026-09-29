@@ -24,7 +24,7 @@ use crate::adapter::cursor::CursorAdapter;
 use crate::adapter::kiro::{KiroAdapter, KiroHookPayload};
 use crate::adapter::{Adapter, HookInput, HookResponse, Permission};
 use crate::engine::PolicyEngine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
@@ -177,9 +177,9 @@ fn home_dir() -> Result<PathBuf, InstallError> {
     #[cfg(not(target_os = "windows"))]
     let key = "HOME";
 
-    env::var(key).map(PathBuf::from).map_err(|_| {
-        InstallError::PathResolution(format!("{} environment variable not set", key))
-    })
+    env::var(key)
+        .map(PathBuf::from)
+        .map_err(|_| InstallError::PathResolution(format!("{} environment variable not set", key)))
 }
 
 /// Resolve `current_exe`, canonicalize, and strip Windows `\\?\` prefix.
@@ -330,7 +330,9 @@ fn cursor_add_hook_entry(hooks_value: &mut Value, hook_name: &str, entry: &Value
         return;
     };
     let arr = hooks.entry(hook_name).or_insert_with(|| json!([]));
-    let Some(arr) = arr.as_array_mut() else { return };
+    let Some(arr) = arr.as_array_mut() else {
+        return;
+    };
 
     let is_mr_nope = |v: &Value| {
         v.get("command")
@@ -446,6 +448,7 @@ impl AgentIntegration for CursorIntegration {
     }
 
     fn emit_decision(&self, response: &HookResponse) -> i32 {
+        write_notices(response);
         // Cursor reads a JSON HookResponse from stdout and always exits 0.
         match serde_json::to_string(response) {
             Ok(json) => println!("{}", json),
@@ -569,6 +572,7 @@ impl AgentIntegration for KiroIntegration {
     }
 
     fn emit_decision(&self, response: &HookResponse) -> i32 {
+        write_notices(response);
         match response.permission {
             Permission::Allow => EXIT_ALLOW,
             Permission::Deny => {
@@ -585,6 +589,13 @@ impl AgentIntegration for KiroIntegration {
     }
 }
 
+/// Write parse-error notes. They are not the block message.
+fn write_notices(response: &HookResponse) {
+    for notice in &response.notices {
+        let _ = writeln!(io::stderr(), "{notice}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,10 +603,7 @@ mod tests {
 
     #[test]
     fn test_integration_lookup_known() {
-        assert_eq!(
-            integration("cursor").ok().map(|i| i.name()),
-            Some("cursor")
-        );
+        assert_eq!(integration("cursor").ok().map(|i| i.name()), Some("cursor"));
         assert_eq!(integration("kiro").ok().map(|i| i.name()), Some("kiro"));
     }
 
@@ -690,10 +698,12 @@ mod tests {
         assert_eq!(entry["trigger"], "PreToolUse");
         assert_eq!(entry["matcher"], KIRO_TOOL_MATCHER);
         assert_eq!(entry["action"]["type"], "command");
-        assert!(entry["action"]["command"]
-            .as_str()
-            .unwrap()
-            .contains("--adapter kiro"));
+        assert!(
+            entry["action"]["command"]
+                .as_str()
+                .unwrap()
+                .contains("--adapter kiro")
+        );
     }
 
     #[test]
@@ -735,11 +745,13 @@ mod tests {
             permission: Permission::Allow,
             user_message: None,
             agent_message: None,
+            notices: Vec::new(),
         };
         let deny = HookResponse {
             permission: Permission::Deny,
             user_message: Some("blocked".to_string()),
             agent_message: Some("blocked".to_string()),
+            notices: Vec::new(),
         };
         // Cursor exits 0 regardless; the decision rides in the stdout JSON.
         assert_eq!(CursorIntegration.emit_decision(&allow), EXIT_ALLOW);
@@ -752,13 +764,29 @@ mod tests {
             permission: Permission::Allow,
             user_message: None,
             agent_message: None,
+            notices: Vec::new(),
         };
         let deny = HookResponse {
             permission: Permission::Deny,
             user_message: Some("blocked".to_string()),
             agent_message: Some("blocked".to_string()),
+            notices: Vec::new(),
         };
         assert_eq!(KiroIntegration.emit_decision(&allow), EXIT_ALLOW);
         assert_eq!(KiroIntegration.emit_decision(&deny), EXIT_BLOCK);
+    }
+
+    #[test]
+    fn test_hook_response_json_omits_notices() {
+        let response = HookResponse {
+            permission: Permission::Allow,
+            user_message: None,
+            agent_message: None,
+            notices: vec!["mr-nope: parse_error context=tool_input kind=UnclosedQuote action=allow preview=\"x\"".to_string()],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(!json.contains("notices"));
+        assert!(!json.contains("parse_error"));
+        assert!(json.contains("\"permission\":\"allow\""));
     }
 }

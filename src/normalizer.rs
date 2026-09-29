@@ -73,7 +73,8 @@ impl Normalizer {
 
         // The decoded output may not be valid UTF-8 (e.g., decoding arbitrary bytes).
         // We use lossy conversion to handle this gracefully.
-        String::from_utf8(result).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+        String::from_utf8(result)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
     }
 
     /// Perform iterative URL decoding up to MAX_DECODE_PASSES passes.

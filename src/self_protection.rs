@@ -16,11 +16,7 @@ const PROTECTED_PATTERNS: &[&str] = &[
 
 /// Mr. Nope CLI subcommands that are allowed (read-only).
 /// Any other `mr-nope` invocation by the agent is blocked.
-const ALLOWED_MR_NOPE_SUBCOMMANDS: &[&str] = &[
-    "policy",
-    "status",
-    "test",
-];
+const ALLOWED_MR_NOPE_SUBCOMMANDS: &[&str] = &["policy", "status", "test"];
 
 /// Check if a command string is a self-protection violation.
 ///
@@ -85,8 +81,7 @@ fn is_blocked_mr_nope_invocation(lower_command: &str) -> bool {
 }
 
 /// The deny message for self-protection violations.
-pub const SELF_PROTECTION_REASON: &str =
-    "modifying Mr. Nope configuration is not permitted via AI agent. Use 'mr-nope policy' to view active rules.";
+pub const SELF_PROTECTION_REASON: &str = "modifying Mr. Nope configuration is not permitted via AI agent. Use 'mr-nope policy' to view active rules.";
 
 #[cfg(test)]
 mod tests {
@@ -164,7 +159,9 @@ mod tests {
     fn test_allows_mr_nope_evaluate() {
         // The hook entry point must always be allowed
         assert!(check_self_protection("mr-nope evaluate").is_none());
-        assert!(check_self_protection("C:\\Users\\linus\\.cargo\\bin\\mr-nope.exe evaluate").is_none());
+        assert!(
+            check_self_protection("C:\\Users\\linus\\.cargo\\bin\\mr-nope.exe evaluate").is_none()
+        );
     }
 
     #[test]
@@ -182,7 +179,12 @@ mod tests {
     #[test]
     fn test_blocks_mr_nope_with_full_path() {
         assert!(check_self_protection("/usr/local/bin/mr-nope install cursor").is_some());
-        assert!(check_self_protection("C:\\Users\\linus\\.cargo\\bin\\mr-nope.exe install cursor --global").is_some());
+        assert!(
+            check_self_protection(
+                "C:\\Users\\linus\\.cargo\\bin\\mr-nope.exe install cursor --global"
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -244,7 +246,8 @@ mod tests {
     #[test]
     fn test_hex_escape_bypasses() {
         // Path constructed with hex escapes — no literal match
-        let cmd = "printf '\\x2e\\x6d\\x72\\x2d\\x6e\\x6f\\x70\\x65\\x2e\\x79\\x6d\\x6c' | xargs rm";
+        let cmd =
+            "printf '\\x2e\\x6d\\x72\\x2d\\x6e\\x6f\\x70\\x65\\x2e\\x79\\x6d\\x6c' | xargs rm";
         assert!(check_self_protection(cmd).is_none());
     }
 

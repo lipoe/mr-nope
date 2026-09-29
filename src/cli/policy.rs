@@ -2,7 +2,7 @@
 // Displays active policy rules and indicates whether the default or custom policy is active.
 
 use crate::cli::evaluate::{discover_policy_from_cwd, get_user_policy_path};
-use crate::engine::PolicyEngine;
+use crate::engine::{ParseErrorPolicy, PolicyEngine};
 use std::path::PathBuf;
 
 /// Run the `mr-nope policy` command.
@@ -43,6 +43,8 @@ fn display_global_policy() {
                         println!("  \u{2022} {} [{}]", rule.command, subcommands);
                     }
                 }
+                println!();
+                print_parse_error_policy(&engine.on_parse_error);
             }
             Err(e) => {
                 eprintln!("Error loading global policy: {}", e);
@@ -60,6 +62,9 @@ fn display_global_policy() {
         println!("        subcommands:");
         println!("          - \"push\"");
         println!("          - \"merge\"");
+        println!("  on_parse_error:");
+        println!("    shell: deny");
+        println!("    tool_input: allow");
     }
 }
 
@@ -85,12 +90,21 @@ fn display_policy(engine: &PolicyEngine, policy_path: Option<&PathBuf>) {
             println!("  \u{2022} {} [{}]", rule.command, subcommands);
         }
     }
+
+    println!();
+    print_parse_error_policy(&engine.on_parse_error);
+}
+
+fn print_parse_error_policy(policy: &ParseErrorPolicy) {
+    println!("Parse errors:");
+    println!("  \u{2022} shell: {}", policy.shell.as_str());
+    println!("  \u{2022} tool_input: {}", policy.tool_input.as_str());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::DenyRule;
+    use crate::engine::{DenyRule, ParseErrorAction};
 
     /// Helper: captures the display_policy output by testing the logic directly.
     /// Since display_policy prints to stdout, we test the underlying engine state.
@@ -103,7 +117,21 @@ mod tests {
         assert!(engine.is_default);
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].command, "git");
-        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
+        assert_eq!(
+            engine.rules[0].subcommands,
+            vec![
+                "commit",
+                "push",
+                "merge",
+                "rebase",
+                "reset",
+                "cherry-pick",
+                "revert",
+                "tag"
+            ]
+        );
+        assert_eq!(engine.on_parse_error.shell, ParseErrorAction::Deny);
+        assert_eq!(engine.on_parse_error.tool_input, ParseErrorAction::Allow);
     }
 
     #[test]
@@ -121,6 +149,7 @@ mod tests {
             ],
             is_default: false,
             mode: crate::engine::PolicyMode::Replace,
+            on_parse_error: crate::engine::ParseErrorPolicy::default(),
         };
 
         assert!(!engine.is_default);
@@ -139,6 +168,7 @@ mod tests {
             rules: vec![],
             is_default: false,
             mode: crate::engine::PolicyMode::Replace,
+            on_parse_error: crate::engine::ParseErrorPolicy::default(),
         };
 
         assert!(engine.rules.is_empty());
@@ -161,6 +191,7 @@ mod tests {
             }],
             is_default: false,
             mode: crate::engine::PolicyMode::Replace,
+            on_parse_error: crate::engine::ParseErrorPolicy::default(),
         };
         assert!(!engine.is_default);
         // display_policy would print "Active Policy (custom: ...):" for this

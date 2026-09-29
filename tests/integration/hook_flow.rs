@@ -168,7 +168,8 @@ fn test_malformed_json_input_denies() {
 
     assert_eq!(get_permission(&stdout), "deny");
 
-    let user_message = get_user_message(&stdout).expect("malformed input deny should have userMessage");
+    let user_message =
+        get_user_message(&stdout).expect("malformed input deny should have userMessage");
     assert!(
         user_message.contains("Mr. Nope"),
         "userMessage should mention Mr. Nope, got: {user_message}"
@@ -203,7 +204,8 @@ fn test_unknown_hook_event_denies() {
 
     assert_eq!(get_permission(&stdout), "deny");
 
-    let user_message = get_user_message(&stdout).expect("unknown event deny should have userMessage");
+    let user_message =
+        get_user_message(&stdout).expect("unknown event deny should have userMessage");
     assert!(
         user_message.contains("Mr. Nope") || user_message.contains("unknown"),
         "userMessage should indicate error, got: {user_message}"
@@ -226,8 +228,8 @@ fn test_unknown_hook_event_after_execution_denies() {
 fn test_allow_response_format() {
     let input = r#"{"command": "ls -la", "hook_event_name": "beforeShellExecution", "workspace_roots": ["/tmp"]}"#;
     let stdout = run_evaluate(input);
-    let v: serde_json::Value = serde_json::from_str(stdout.trim())
-        .expect("response should be valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("response should be valid JSON");
 
     assert_eq!(v["permission"], "allow");
     // Allow responses should not include userMessage or agentMessage
@@ -239,8 +241,8 @@ fn test_allow_response_format() {
 fn test_deny_response_format() {
     let input = r#"{"command": "git push", "hook_event_name": "beforeShellExecution", "workspace_roots": ["/tmp"]}"#;
     let stdout = run_evaluate(input);
-    let v: serde_json::Value = serde_json::from_str(stdout.trim())
-        .expect("response should be valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("response should be valid JSON");
 
     assert_eq!(v["permission"], "deny");
     // Deny responses must include userMessage and agentMessage
@@ -329,6 +331,36 @@ fn test_kiro_tool_input_allow_safe_exits_0() {
     let input = r#"{"tool_name": "fs_write", "tool_input": {"path": "README.md", "text": "hello"}, "workspace_roots": ["/tmp"]}"#;
     let (code, _stderr) = run_evaluate_kiro(input);
     assert_eq!(code, 0, "safe tool input should be allowed");
+}
+
+#[test]
+fn test_kiro_tool_input_unparsed_text_allows_and_logs() {
+    let input = r#"{"tool_name": "fs_write", "tool_input": {"path": "a.txt", "text": "don't write this"}, "workspace_roots": ["/tmp"]}"#;
+    let (code, stderr) = run_evaluate_kiro(input);
+    assert_eq!(code, 0, "unparsed file text should be allowed by default");
+    assert!(
+        stderr.contains("parse_error")
+            && stderr.contains("action=allow")
+            && stderr.contains("kind=UnclosedQuote"),
+        "stderr should log the parse error without blocking: {stderr}"
+    );
+    assert!(
+        !stderr.contains("BLOCKED"),
+        "an allowed parse error must not use the block message: {stderr}"
+    );
+}
+
+#[test]
+fn test_kiro_shell_unclosed_quote_denies_and_logs() {
+    let input = r#"{"tool_name": "execute_bash", "tool_input": {"command": "git push \""}, "workspace_roots": ["/tmp"]}"#;
+    let (code, stderr) = run_evaluate_kiro(input);
+    assert_eq!(code, 2, "unparsed shell command should stay fail-closed");
+    assert!(
+        stderr.contains("kind=UnclosedQuote")
+            && stderr.contains("action=deny")
+            && stderr.contains("BLOCKED"),
+        "stderr should log the parse error and the block: {stderr}"
+    );
 }
 
 #[test]

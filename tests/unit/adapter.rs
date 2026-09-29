@@ -110,7 +110,9 @@ fn test_deny_message_mcp_execution_format() {
 
     let user_msg = response.user_message.unwrap();
     assert!(user_msg.starts_with("🚫 Mr. Nope blocked: git push"));
-    assert!(user_msg.contains("(matched deny rule: git [commit, push, merge, rebase, reset, cherry-pick, revert, tag])"));
+    assert!(user_msg.contains(
+        "(matched deny rule: git [commit, push, merge, rebase, reset, cherry-pick, revert, tag])"
+    ));
     assert!(user_msg.contains("Note: this protection applies only to AI agent execution via hooks, not to direct terminal usage."));
 
     let agent_msg = response.agent_message.unwrap();

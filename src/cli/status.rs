@@ -5,7 +5,7 @@
 // asks each one where its hook configuration lives, then checks for a Mr. Nope
 // marker there. Adding a new agent never touches this file.
 
-use crate::adapter::integration::{self, is_installed_at, AgentIntegration, InstallScope};
+use crate::adapter::integration::{self, AgentIntegration, InstallScope, is_installed_at};
 
 /// Represents the installation state of an adapter at a particular scope.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,9 +70,15 @@ pub fn run_status() {
         println!();
     }
     println!("SECURITY SCOPE:");
-    println!("• Mr. Nope only prevents execution via supported hook paths of the integrated AI coding agent.");
-    println!("• Mr. Nope does not prevent a human user from running forbidden commands directly in a terminal.");
-    println!("• Mr. Nope is not a system-wide sandbox or a replacement for OS-level access controls.");
+    println!(
+        "• Mr. Nope only prevents execution via supported hook paths of the integrated AI coding agent."
+    );
+    println!(
+        "• Mr. Nope does not prevent a human user from running forbidden commands directly in a terminal."
+    );
+    println!(
+        "• Mr. Nope is not a system-wide sandbox or a replacement for OS-level access controls."
+    );
 }
 
 #[cfg(test)]

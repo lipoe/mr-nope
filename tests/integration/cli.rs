@@ -104,7 +104,11 @@ fn test_install_preserves_existing_hooks() {
             ]
         }
     });
-    fs::write(&hooks_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+    fs::write(
+        &hooks_path,
+        serde_json::to_string_pretty(&existing).unwrap(),
+    )
+    .unwrap();
 
     // Run install
     let output = Command::new(mr_nope_bin())
@@ -126,12 +130,22 @@ fn test_install_preserves_existing_hooks() {
     let shell_hooks = parsed["hooks"]["beforeShellExecution"].as_array().unwrap();
     assert_eq!(shell_hooks.len(), 2, "should have both hooks");
     assert_eq!(shell_hooks[0]["command"], "other-tool check");
-    assert!(shell_hooks[1]["command"].as_str().unwrap().contains("mr-nope"));
+    assert!(
+        shell_hooks[1]["command"]
+            .as_str()
+            .unwrap()
+            .contains("mr-nope")
+    );
 
     let mcp_hooks = parsed["hooks"]["beforeMCPExecution"].as_array().unwrap();
     assert_eq!(mcp_hooks.len(), 2, "should have both hooks");
     assert_eq!(mcp_hooks[0]["command"], "security-scanner verify");
-    assert!(mcp_hooks[1]["command"].as_str().unwrap().contains("mr-nope"));
+    assert!(
+        mcp_hooks[1]["command"]
+            .as_str()
+            .unwrap()
+            .contains("mr-nope")
+    );
 }
 
 #[test]
@@ -157,7 +171,11 @@ fn test_uninstall_removes_only_mr_nope_entries() {
             ]
         }
     });
-    fs::write(&hooks_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+    fs::write(
+        &hooks_path,
+        serde_json::to_string_pretty(&existing).unwrap(),
+    )
+    .unwrap();
 
     // Run uninstall
     let output = Command::new(mr_nope_bin())

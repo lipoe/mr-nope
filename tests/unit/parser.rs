@@ -39,9 +39,11 @@ mod split_compound_tests {
 
     #[test]
     fn split_mixed_operators() {
-        let result =
-            Parser::split_compound("echo a | grep b && echo c || echo d; echo e").unwrap();
-        assert_eq!(result, vec!["echo a", "grep b", "echo c", "echo d", "echo e"]);
+        let result = Parser::split_compound("echo a | grep b && echo c || echo d; echo e").unwrap();
+        assert_eq!(
+            result,
+            vec!["echo a", "grep b", "echo c", "echo d", "echo e"]
+        );
     }
 
     #[test]
@@ -138,7 +140,6 @@ mod split_compound_tests {
         );
     }
 }
-
 
 // ============================================================
 // Nested Shell Tests (Requirement 3.2)
@@ -478,8 +479,7 @@ mod compound_mixed_operator_tests {
 
     #[test]
     fn pipe_and_logical_and_semicolon_combined() {
-        let result =
-            Parser::split_compound("echo a | grep b && echo c; echo d || echo e").unwrap();
+        let result = Parser::split_compound("echo a | grep b && echo c; echo d || echo e").unwrap();
         assert_eq!(
             result,
             vec!["echo a", "grep b", "echo c", "echo d", "echo e"]
@@ -489,8 +489,7 @@ mod compound_mixed_operator_tests {
     #[test]
     fn deeply_nested_quotes_with_operators() {
         // Operators inside nested quotes should not trigger splitting
-        let result =
-            Parser::split_compound("echo \"hello && world\" | grep 'foo || bar'").unwrap();
+        let result = Parser::split_compound("echo \"hello && world\" | grep 'foo || bar'").unwrap();
         assert_eq!(result, vec!["echo \"hello && world\"", "grep 'foo || bar'"]);
     }
 

@@ -2,8 +2,8 @@
 // Loads YAML policy files and matches commands against deny rules.
 
 use crate::normalizer::Normalizer;
+use crate::parser::{ParseError, ParsedCommand, Parser};
 use crate::self_protection;
-use crate::parser::{ParsedCommand, Parser};
 use serde::Deserialize;
 use std::fmt;
 use std::path::Path;
@@ -32,6 +32,9 @@ pub struct EvaluationResult {
     pub raw_input: String,
     pub normalized: String,
     pub parsed_commands: Vec<ParsedCommand>,
+    /// A parse-error note, when this evaluation could not parse its input.
+    /// The integration shell writes it to stderr. The engine does not.
+    pub notice: Option<String>,
 }
 
 /// Trait for evaluating commands against a policy.
@@ -62,6 +65,8 @@ pub enum PolicyError {
     SubcommandTooLong,
     /// The policy file could not be read.
     IoError(String),
+    /// `on_parse_error` contains a value other than `allow` or `deny`.
+    InvalidParseErrorAction(String),
 }
 
 impl fmt::Display for PolicyError {
@@ -85,6 +90,13 @@ impl fmt::Display for PolicyError {
                 write!(f, "deny rule 'subcommands' entry exceeds 128 characters")
             }
             PolicyError::IoError(msg) => write!(f, "I/O error: {}", msg),
+            PolicyError::InvalidParseErrorAction(msg) => {
+                write!(
+                    f,
+                    "invalid on_parse_error value '{}' (expected \"allow\" or \"deny\")",
+                    msg
+                )
+            }
         }
     }
 }
@@ -110,6 +122,142 @@ impl Default for PolicyMode {
     }
 }
 
+/// What to do when a string cannot be parsed as a shell command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseErrorAction {
+    /// Let the call through. A string that parses and matches a deny rule is still blocked.
+    Allow,
+    /// Block the call.
+    Deny,
+}
+
+impl ParseErrorAction {
+    /// YAML / log spelling of this action.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ParseErrorAction::Allow => "allow",
+            ParseErrorAction::Deny => "deny",
+        }
+    }
+}
+
+/// Which hook path produced the string being parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseContext {
+    /// A shell tool command (`execute_bash`, `shell`, `beforeShellExecution`).
+    Shell,
+    /// A string scanned out of a non-shell tool payload (file body, MCP argument).
+    ToolInput,
+}
+
+impl ParseContext {
+    /// YAML / log spelling of this context.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ParseContext::Shell => "shell",
+            ParseContext::ToolInput => "tool_input",
+        }
+    }
+}
+
+/// Policy for parse failures, split by hook path.
+///
+/// Defaults: shell commands fail closed (`deny`), non-shell tool strings fail open (`allow`).
+/// With `mode: extend`, a field the project sets overrides the base; an omitted field is inherited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseErrorPolicy {
+    pub shell: ParseErrorAction,
+    pub tool_input: ParseErrorAction,
+    shell_set: bool,
+    tool_input_set: bool,
+}
+
+impl Default for ParseErrorPolicy {
+    fn default() -> Self {
+        Self {
+            shell: ParseErrorAction::Deny,
+            tool_input: ParseErrorAction::Allow,
+            shell_set: false,
+            tool_input_set: false,
+        }
+    }
+}
+
+impl ParseErrorPolicy {
+    /// Action configured for this hook path.
+    pub fn action(self, context: ParseContext) -> ParseErrorAction {
+        match context {
+            ParseContext::Shell => self.shell,
+            ParseContext::ToolInput => self.tool_input,
+        }
+    }
+
+    /// Overlay an extending policy onto a base. Fields the extension set win.
+    fn overlay_on(self, base: Self) -> Self {
+        Self {
+            shell: if self.shell_set {
+                self.shell
+            } else {
+                base.shell
+            },
+            tool_input: if self.tool_input_set {
+                self.tool_input
+            } else {
+                base.tool_input
+            },
+            shell_set: self.shell_set || base.shell_set,
+            tool_input_set: self.tool_input_set || base.tool_input_set,
+        }
+    }
+}
+
+/// One stderr line for a parse failure. This is a note, not the deny message.
+fn format_parse_error_log(
+    context: ParseContext,
+    kind: &ParseError,
+    action: ParseErrorAction,
+    raw: &str,
+) -> String {
+    format!(
+        "mr-nope: parse_error context={} kind={} action={} preview=\"{}\"",
+        context.as_str(),
+        kind.kind_name(),
+        action.as_str(),
+        preview_for_log(raw)
+    )
+}
+
+/// First 80 characters of `raw`, escaped so the log stays a single line.
+fn preview_for_log(raw: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let mut out = String::new();
+    for (i, ch) in raw.chars().enumerate() {
+        if i >= MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn parse_action(field: &str, value: &str) -> Result<ParseErrorAction, PolicyError> {
+    match value.trim() {
+        "allow" => Ok(ParseErrorAction::Allow),
+        "deny" => Ok(ParseErrorAction::Deny),
+        other => Err(PolicyError::InvalidParseErrorAction(format!(
+            "{field}: {other}"
+        ))),
+    }
+}
+
 // --- Serde deserialization structs for YAML policy file ---
 
 /// Top-level YAML schema for the policy file.
@@ -117,6 +265,15 @@ impl Default for PolicyMode {
 struct PolicyFileSchema {
     mode: Option<String>,
     rules: Option<Vec<RuleEntrySchema>>,
+    on_parse_error: Option<OnParseErrorSchema>,
+}
+
+/// The `on_parse_error` object. Omitted fields keep their default or, under
+/// `mode: extend`, the base policy's value.
+#[derive(Debug, Deserialize)]
+struct OnParseErrorSchema {
+    shell: Option<String>,
+    tool_input: Option<String>,
 }
 
 /// A single rule entry in the `rules` array.
@@ -155,6 +312,7 @@ pub struct PolicyEngine {
     pub rules: Vec<DenyRule>,
     pub is_default: bool,
     pub mode: PolicyMode,
+    pub on_parse_error: ParseErrorPolicy,
 }
 
 impl PolicyEngine {
@@ -230,6 +388,8 @@ impl PolicyEngine {
             _ => PolicyMode::Replace,
         };
 
+        let on_parse_error = parse_on_parse_error(schema.on_parse_error)?;
+
         let rules_entries = schema.rules.ok_or(PolicyError::MissingRulesArray)?;
 
         let mut rules = Vec::new();
@@ -276,6 +436,7 @@ impl PolicyEngine {
             rules,
             is_default,
             mode,
+            on_parse_error,
         })
     }
 
@@ -292,7 +453,10 @@ impl PolicyEngine {
 
         // Start with base rules, replacing subcommands if extension has same command
         for base_rule in &base.rules {
-            if let Some(ext_rule) = extension.rules.iter().find(|r| r.command == base_rule.command)
+            if let Some(ext_rule) = extension
+                .rules
+                .iter()
+                .find(|r| r.command == base_rule.command)
             {
                 // Extension overrides the subcommands for this command
                 merged_rules.push(DenyRule {
@@ -316,21 +480,81 @@ impl PolicyEngine {
             rules: merged_rules,
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: extension.on_parse_error.overlay_on(base.on_parse_error),
+        }
+    }
+
+    /// Apply `on_parse_error` for this hook path and record the log line.
+    ///
+    /// Self-protection does not go through here. A configured `allow` skips the
+    /// unparsable string; it does not suppress a deny rule that parsed cleanly.
+    /// The notice is data. The caller writes it.
+    fn parse_error_result(
+        &self,
+        context: ParseContext,
+        kind: &ParseError,
+        raw_command: &str,
+        normalized_text: &str,
+        parsed_commands: Vec<ParsedCommand>,
+    ) -> EvaluationResult {
+        let action = self.on_parse_error.action(context);
+        let notice = format_parse_error_log(context, kind, action, raw_command);
+        let decision = match action {
+            ParseErrorAction::Allow => Decision::Allow,
+            ParseErrorAction::Deny => {
+                let detail = format!(
+                    "{}: command could not be parsed for policy evaluation",
+                    kind.kind_name()
+                );
+                Decision::Deny {
+                    rule: DenyRule {
+                        command: "__parse_error__".to_string(),
+                        subcommands: vec![detail.clone()],
+                    },
+                    matched_subcommand: detail,
+                }
+            }
+        };
+        EvaluationResult {
+            decision,
+            raw_input: raw_command.to_string(),
+            normalized: normalized_text.to_string(),
+            parsed_commands,
+            notice: Some(notice),
         }
     }
 }
 
-impl PolicyEvaluator for PolicyEngine {
-    /// Evaluate a raw command string against the policy.
+fn parse_on_parse_error(
+    schema: Option<OnParseErrorSchema>,
+) -> Result<ParseErrorPolicy, PolicyError> {
+    let mut policy = ParseErrorPolicy::default();
+    let Some(schema) = schema else {
+        return Ok(policy);
+    };
+    if let Some(value) = schema.shell {
+        policy.shell = parse_action("shell", &value)?;
+        policy.shell_set = true;
+    }
+    if let Some(value) = schema.tool_input {
+        policy.tool_input = parse_action("tool_input", &value)?;
+        policy.tool_input_set = true;
+    }
+    Ok(policy)
+}
+
+impl PolicyEngine {
+    /// Evaluate a raw command string against the policy in a hook-path context.
     ///
     /// Pipeline: Normalize → strip comments → split compound → for each segment:
     ///   extract nested shell → strip builtin prefix → extract substitutions →
     ///   identify command → match against policy.
     ///
     /// Returns Allow immediately for empty/whitespace-only input.
-    /// Returns Deny (fail-closed) if any parse error occurs.
+    /// On a parse error, records a notice and follows [`ParseErrorPolicy`] for `context`.
     /// Returns Deny if ANY extracted command matches a deny rule.
-    fn evaluate(&self, raw_command: &str) -> EvaluationResult {
+    /// Self-protection denies before parsing and ignores `on_parse_error`.
+    pub fn evaluate_in(&self, raw_command: &str, context: ParseContext) -> EvaluationResult {
         // 1. Empty or whitespace-only → Allow immediately
         if raw_command.trim().is_empty() {
             return EvaluationResult {
@@ -338,6 +562,7 @@ impl PolicyEvaluator for PolicyEngine {
                 raw_input: raw_command.to_string(),
                 normalized: String::new(),
                 parsed_commands: vec![],
+                notice: None,
             };
         }
 
@@ -353,6 +578,7 @@ impl PolicyEvaluator for PolicyEngine {
                 raw_input: raw_command.to_string(),
                 normalized: normalized_text,
                 parsed_commands: vec![],
+                notice: None,
             };
         }
 
@@ -364,14 +590,12 @@ impl PolicyEvaluator for PolicyEngine {
                         command: "__self_protection__".to_string(),
                         subcommands: vec![self_protection::SELF_PROTECTION_REASON.to_string()],
                     },
-                    matched_subcommand: format!(
-                        "write to protected path '{}'",
-                        protected_pattern
-                    ),
+                    matched_subcommand: format!("write to protected path '{}'", protected_pattern),
                 },
                 raw_input: raw_command.to_string(),
                 normalized: normalized_text,
                 parsed_commands: vec![],
+                notice: None,
             };
         }
 
@@ -383,14 +607,12 @@ impl PolicyEvaluator for PolicyEngine {
                         command: "__self_protection__".to_string(),
                         subcommands: vec![self_protection::SELF_PROTECTION_REASON.to_string()],
                     },
-                    matched_subcommand: format!(
-                        "write to protected path '{}'",
-                        protected_pattern
-                    ),
+                    matched_subcommand: format!("write to protected path '{}'", protected_pattern),
                 },
                 raw_input: raw_command.to_string(),
                 normalized: normalized_text,
                 parsed_commands: vec![],
+                notice: None,
             };
         }
 
@@ -404,28 +626,21 @@ impl PolicyEvaluator for PolicyEngine {
                 raw_input: raw_command.to_string(),
                 normalized: normalized_text,
                 parsed_commands: vec![],
+                notice: None,
             };
         }
 
         // 4. Split compound commands
         let segments = match Parser::split_compound(&comment_stripped) {
             Ok(segs) => segs,
-            Err(_) => {
-                // Parse error → fail-closed: deny with synthetic rule
-                return EvaluationResult {
-                    decision: Decision::Deny {
-                        rule: DenyRule {
-                            command: "__parse_error__".to_string(),
-                            subcommands: vec!["command could not be parsed for policy evaluation"
-                                .to_string()],
-                        },
-                        matched_subcommand: "command could not be parsed for policy evaluation"
-                            .to_string(),
-                    },
-                    raw_input: raw_command.to_string(),
-                    normalized: normalized_text,
-                    parsed_commands: vec![],
-                };
+            Err(err) => {
+                return self.parse_error_result(
+                    context,
+                    &err,
+                    raw_command,
+                    &normalized_text,
+                    Vec::new(),
+                );
             }
         };
 
@@ -440,24 +655,14 @@ impl PolicyEvaluator for PolicyEngine {
             // 5a. Extract nested shell (depth 0)
             let extracted_commands = match Parser::extract_nested_shell(segment, 0) {
                 Ok(cmds) => cmds,
-                Err(_) => {
-                    // Parse error → fail-closed
-                    return EvaluationResult {
-                        decision: Decision::Deny {
-                            rule: DenyRule {
-                                command: "__parse_error__".to_string(),
-                                subcommands: vec![
-                                    "command could not be parsed for policy evaluation"
-                                        .to_string(),
-                                ],
-                            },
-                            matched_subcommand:
-                                "command could not be parsed for policy evaluation".to_string(),
-                        },
-                        raw_input: raw_command.to_string(),
-                        normalized: normalized_text,
-                        parsed_commands: all_parsed_commands,
-                    };
+                Err(err) => {
+                    return self.parse_error_result(
+                        context,
+                        &err,
+                        raw_command,
+                        &normalized_text,
+                        all_parsed_commands,
+                    );
                 }
             };
 
@@ -481,24 +686,14 @@ impl PolicyEvaluator for PolicyEngine {
                             }
                         }
                     }
-                    Err(_) => {
-                        // Parse error → fail-closed
-                        return EvaluationResult {
-                            decision: Decision::Deny {
-                                rule: DenyRule {
-                                    command: "__parse_error__".to_string(),
-                                    subcommands: vec![
-                                        "command could not be parsed for policy evaluation"
-                                            .to_string(),
-                                    ],
-                                },
-                                matched_subcommand:
-                                    "command could not be parsed for policy evaluation".to_string(),
-                            },
-                            raw_input: raw_command.to_string(),
-                            normalized: normalized_text,
-                            parsed_commands: all_parsed_commands,
-                        };
+                    Err(err) => {
+                        return self.parse_error_result(
+                            context,
+                            &err,
+                            raw_command,
+                            &normalized_text,
+                            all_parsed_commands,
+                        );
                     }
                 }
             }
@@ -524,6 +719,7 @@ impl PolicyEvaluator for PolicyEngine {
                         raw_input: raw_command.to_string(),
                         normalized: normalized_text,
                         parsed_commands: all_parsed_commands,
+                        notice: None,
                     };
                 }
             }
@@ -535,7 +731,15 @@ impl PolicyEvaluator for PolicyEngine {
             raw_input: raw_command.to_string(),
             normalized: normalized_text,
             parsed_commands: all_parsed_commands,
+            notice: None,
         }
+    }
+}
+
+impl PolicyEvaluator for PolicyEngine {
+    /// Evaluate a shell command. Parse errors use the `shell` action.
+    fn evaluate(&self, raw_command: &str) -> EvaluationResult {
+        self.evaluate_in(raw_command, ParseContext::Shell)
     }
 }
 
@@ -549,7 +753,19 @@ mod tests {
         let engine = PolicyEngine::default_policy();
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].command, "git");
-        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
+        assert_eq!(
+            engine.rules[0].subcommands,
+            vec![
+                "commit",
+                "push",
+                "merge",
+                "rebase",
+                "reset",
+                "cherry-pick",
+                "revert",
+                "tag"
+            ]
+        );
         assert!(engine.is_default);
     }
 
@@ -558,14 +774,25 @@ mod tests {
         let engine = PolicyEngine::load(None).unwrap();
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].command, "git");
-        assert_eq!(engine.rules[0].subcommands, vec!["commit", "push", "merge", "rebase", "reset", "cherry-pick", "revert", "tag"]);
+        assert_eq!(
+            engine.rules[0].subcommands,
+            vec![
+                "commit",
+                "push",
+                "merge",
+                "rebase",
+                "reset",
+                "cherry-pick",
+                "revert",
+                "tag"
+            ]
+        );
         assert!(engine.is_default);
     }
 
     #[test]
     fn test_load_nonexistent_path_returns_default_policy() {
-        let engine =
-            PolicyEngine::load(Some(Path::new("/does/not/exist/.mr-nope.yml"))).unwrap();
+        let engine = PolicyEngine::load(Some(Path::new("/does/not/exist/.mr-nope.yml"))).unwrap();
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].command, "git");
         assert!(engine.is_default);
@@ -604,7 +831,16 @@ mod tests {
             Decision::Deny {
                 rule: DenyRule {
                     command: "git".to_string(),
-                    subcommands: vec!["commit".to_string(), "push".to_string(), "merge".to_string(), "rebase".to_string(), "reset".to_string(), "cherry-pick".to_string(), "revert".to_string(), "tag".to_string()],
+                    subcommands: vec![
+                        "commit".to_string(),
+                        "push".to_string(),
+                        "merge".to_string(),
+                        "rebase".to_string(),
+                        "reset".to_string(),
+                        "cherry-pick".to_string(),
+                        "revert".to_string(),
+                        "tag".to_string()
+                    ],
                 },
                 matched_subcommand: "push".to_string(),
             }
@@ -700,6 +936,7 @@ mod tests {
             ],
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         // rm -rf should be denied by second rule
@@ -727,6 +964,7 @@ mod tests {
             rules: vec![],
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
         let cmd = ParsedCommand {
             command: "git".to_string(),
@@ -752,6 +990,7 @@ mod tests {
             ],
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let cmd = ParsedCommand {
@@ -802,7 +1041,10 @@ mod tests {
         assert_eq!(result.normalized, "git status");
         assert!(!result.parsed_commands.is_empty());
         assert_eq!(result.parsed_commands[0].command, "git");
-        assert_eq!(result.parsed_commands[0].subcommand, Some("status".to_string()));
+        assert_eq!(
+            result.parsed_commands[0].subcommand,
+            Some("status".to_string())
+        );
     }
 
     #[test]
@@ -916,9 +1158,21 @@ mod tests {
         // Unclosed quote triggers parse error → fail-closed deny
         let result = engine.evaluate("echo \"unclosed");
         assert!(matches!(result.decision, Decision::Deny { .. }));
-        if let Decision::Deny { rule, .. } = &result.decision {
+        if let Decision::Deny {
+            rule,
+            matched_subcommand,
+        } = &result.decision
+        {
             assert_eq!(rule.command, "__parse_error__");
+            assert!(
+                matched_subcommand.contains("UnclosedQuote"),
+                "deny detail should name the parser failure, got {matched_subcommand}"
+            );
         }
+        let notice = result.notice.expect("parse error records a notice");
+        assert!(notice.contains("context=shell"));
+        assert!(notice.contains("action=deny"));
+        assert!(notice.contains("kind=UnclosedQuote"));
     }
 
     #[test]
@@ -979,9 +1233,20 @@ mod tests {
     #[test]
     fn test_evaluate_allowed_git_operations() {
         let engine = PolicyEngine::default_policy();
-        for cmd in &["git status", "git diff", "git log", "git branch", "git fetch"] {
+        for cmd in &[
+            "git status",
+            "git diff",
+            "git log",
+            "git branch",
+            "git fetch",
+        ] {
             let result = engine.evaluate(cmd);
-            assert_eq!(result.decision, Decision::Allow, "Expected ALLOW for: {}", cmd);
+            assert_eq!(
+                result.decision,
+                Decision::Allow,
+                "Expected ALLOW for: {}",
+                cmd
+            );
         }
     }
 
@@ -1047,6 +1312,7 @@ rules:
             }],
             is_default: true,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let extension = PolicyEngine {
@@ -1056,6 +1322,7 @@ rules:
             }],
             is_default: false,
             mode: PolicyMode::Extend,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let merged = PolicyEngine::merge(&base, &extension);
@@ -1072,10 +1339,15 @@ rules:
         let base = PolicyEngine {
             rules: vec![DenyRule {
                 command: "git".to_string(),
-                subcommands: vec!["push".to_string(), "commit".to_string(), "merge".to_string()],
+                subcommands: vec![
+                    "push".to_string(),
+                    "commit".to_string(),
+                    "merge".to_string(),
+                ],
             }],
             is_default: true,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let extension = PolicyEngine {
@@ -1085,6 +1357,7 @@ rules:
             }],
             is_default: false,
             mode: PolicyMode::Extend,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let merged = PolicyEngine::merge(&base, &extension);
@@ -1109,6 +1382,7 @@ rules:
             ],
             is_default: true,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let extension = PolicyEngine {
@@ -1118,6 +1392,7 @@ rules:
             }],
             is_default: false,
             mode: PolicyMode::Extend,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let merged = PolicyEngine::merge(&base, &extension);
@@ -1145,6 +1420,7 @@ rules:
             ],
             is_default: true,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let extension = PolicyEngine {
@@ -1160,6 +1436,7 @@ rules:
             ],
             is_default: false,
             mode: PolicyMode::Extend,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let merged = PolicyEngine::merge(&base, &extension);
@@ -1182,6 +1459,7 @@ rules:
             rules: vec![],
             is_default: false,
             mode: PolicyMode::Extend,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let merged = PolicyEngine::merge(&base, &extension);
@@ -1195,6 +1473,7 @@ rules:
             rules: vec![],
             is_default: true,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let extension = PolicyEngine {
@@ -1204,6 +1483,7 @@ rules:
             }],
             is_default: false,
             mode: PolicyMode::Extend,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let merged = PolicyEngine::merge(&base, &extension);
@@ -1220,6 +1500,7 @@ rules:
             }],
             is_default: true,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let extension = PolicyEngine {
@@ -1235,6 +1516,7 @@ rules:
             ],
             is_default: false,
             mode: PolicyMode::Extend,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let merged = PolicyEngine::merge(&base, &extension);
@@ -1254,5 +1536,206 @@ rules:
         // docker push - denied (new rule from extension)
         let result = merged.evaluate("docker push");
         assert!(matches!(result.decision, Decision::Deny { .. }));
+    }
+
+    #[test]
+    fn test_default_on_parse_error_is_shell_deny_tool_input_allow() {
+        let engine = PolicyEngine::default_policy();
+        assert_eq!(engine.on_parse_error.shell, ParseErrorAction::Deny);
+        assert_eq!(engine.on_parse_error.tool_input, ParseErrorAction::Allow);
+    }
+
+    #[test]
+    fn test_load_on_parse_error_explicit_values() {
+        let yaml = r#"
+on_parse_error:
+  shell: allow
+  tool_input: deny
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#;
+        let engine = PolicyEngine::load_from_str(yaml, false).unwrap();
+        assert_eq!(engine.on_parse_error.shell, ParseErrorAction::Allow);
+        assert_eq!(engine.on_parse_error.tool_input, ParseErrorAction::Deny);
+    }
+
+    #[test]
+    fn test_load_on_parse_error_partial_keeps_other_default() {
+        let yaml = r#"
+on_parse_error:
+  shell: allow
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#;
+        let engine = PolicyEngine::load_from_str(yaml, false).unwrap();
+        assert_eq!(engine.on_parse_error.shell, ParseErrorAction::Allow);
+        assert_eq!(engine.on_parse_error.tool_input, ParseErrorAction::Allow);
+    }
+
+    #[test]
+    fn test_load_on_parse_error_rejects_unknown_action() {
+        let yaml = r#"
+on_parse_error:
+  shell: maybe
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#;
+        let err = PolicyEngine::load_from_str(yaml, false).unwrap_err();
+        assert!(matches!(err, PolicyError::InvalidParseErrorAction(_)));
+    }
+
+    #[test]
+    fn test_merge_on_parse_error_overlay_and_inherit() {
+        let base = PolicyEngine::load_from_str(
+            r#"
+on_parse_error:
+  tool_input: deny
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#,
+            false,
+        )
+        .unwrap();
+        let extension = PolicyEngine::load_from_str(
+            r#"
+mode: extend
+on_parse_error:
+  shell: allow
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#,
+            false,
+        )
+        .unwrap();
+        let merged = PolicyEngine::merge(&base, &extension);
+        assert_eq!(merged.on_parse_error.shell, ParseErrorAction::Allow);
+        assert_eq!(merged.on_parse_error.tool_input, ParseErrorAction::Deny);
+
+        let inherited = PolicyEngine::load_from_str(
+            r#"
+mode: extend
+rules:
+  - deny:
+      command: "docker"
+      subcommands:
+        - "push"
+"#,
+            false,
+        )
+        .unwrap();
+        let merged = PolicyEngine::merge(&base, &inherited);
+        assert_eq!(merged.on_parse_error.shell, ParseErrorAction::Deny);
+        assert_eq!(merged.on_parse_error.tool_input, ParseErrorAction::Deny);
+    }
+
+    #[test]
+    fn test_tool_input_parse_error_allows_by_default() {
+        let engine = PolicyEngine::default_policy();
+        let result = engine.evaluate_in("don't write this", ParseContext::ToolInput);
+        assert_eq!(result.decision, Decision::Allow);
+        let notice = result.notice.expect("parse error records a notice");
+        assert!(notice.contains("context=tool_input"));
+        assert!(notice.contains("action=allow"));
+        assert!(!notice.contains("BLOCKED"));
+    }
+
+    #[test]
+    fn test_tool_input_parse_error_denies_when_configured() {
+        let engine = PolicyEngine::load_from_str(
+            r#"
+on_parse_error:
+  tool_input: deny
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#,
+            false,
+        )
+        .unwrap();
+        let result = engine.evaluate_in("echo `unclosed", ParseContext::ToolInput);
+        match result.decision {
+            Decision::Deny {
+                rule,
+                matched_subcommand,
+            } => {
+                assert_eq!(rule.command, "__parse_error__");
+                assert!(matched_subcommand.contains("MalformedSubstitution"));
+            }
+            other => panic!("expected deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_shell_parse_error_allows_when_configured() {
+        let engine = PolicyEngine::load_from_str(
+            r#"
+on_parse_error:
+  shell: allow
+rules:
+  - deny:
+      command: "git"
+      subcommands:
+        - "push"
+"#,
+            false,
+        )
+        .unwrap();
+        let result = engine.evaluate("echo \"unclosed");
+        assert_eq!(result.decision, Decision::Allow);
+        assert!(result.notice.unwrap().contains("action=allow"));
+    }
+
+    #[test]
+    fn test_tool_input_still_denies_parsed_forbidden_command() {
+        let engine = PolicyEngine::default_policy();
+        let result = engine.evaluate_in("git push", ParseContext::ToolInput);
+        match result.decision {
+            Decision::Deny { rule, .. } => assert_eq!(rule.command, "git"),
+            other => panic!("expected git deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_self_protection_ignores_parse_error_allow() {
+        let engine = PolicyEngine::default_policy();
+        let result = engine.evaluate_in("don't touch .mr-nope.yml", ParseContext::ToolInput);
+        match result.decision {
+            Decision::Deny { rule, .. } => assert_eq!(rule.command, "__self_protection__"),
+            other => panic!("expected self-protection deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_log_line_names_kind_context_and_action() {
+        let line = format_parse_error_log(
+            ParseContext::ToolInput,
+            &ParseError::UnclosedQuote,
+            ParseErrorAction::Allow,
+            "don't\nwrite \"this\"",
+        );
+        assert!(line.starts_with("mr-nope: parse_error "));
+        assert!(line.contains("context=tool_input"));
+        assert!(line.contains("kind=UnclosedQuote"));
+        assert!(line.contains("action=allow"));
+        assert!(line.contains("don't\\nwrite"));
+        assert!(!line.contains('\n'));
+        assert!(!line.contains("BLOCKED"));
     }
 }

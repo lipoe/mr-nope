@@ -40,10 +40,16 @@ pub fn run_test_with_engine(engine: &PolicyEngine) -> i32 {
             total += 1;
             let synthesized = format!("{} {}", rule.command, subcommand);
             let result = engine.evaluate(&synthesized);
+            if let Some(notice) = &result.notice {
+                eprintln!("{notice}");
+            }
 
             match result.decision {
                 Decision::Deny { .. } => {
-                    println!("  \u{2713} {} {} \u{2192} DENY (pass)", rule.command, subcommand);
+                    println!(
+                        "  \u{2713} {} {} \u{2192} DENY (pass)",
+                        rule.command, subcommand
+                    );
                     passed += 1;
                 }
                 Decision::Allow => {
@@ -59,11 +65,7 @@ pub fn run_test_with_engine(engine: &PolicyEngine) -> i32 {
     println!();
     println!("{}/{} tests passed", passed, total);
 
-    if passed == total {
-        0
-    } else {
-        1
-    }
+    if passed == total { 0 } else { 1 }
 }
 
 #[cfg(test)]
@@ -113,6 +115,7 @@ mod tests {
             }],
             is_default: false,
             mode: crate::engine::PolicyMode::Replace,
+            on_parse_error: crate::engine::ParseErrorPolicy::default(),
         };
 
         let exit_code = run_test_with_engine(&engine);
@@ -138,6 +141,7 @@ mod tests {
             ],
             is_default: false,
             mode: crate::engine::PolicyMode::Replace,
+            on_parse_error: crate::engine::ParseErrorPolicy::default(),
         };
 
         let exit_code = run_test_with_engine(&engine);
@@ -151,6 +155,7 @@ mod tests {
             rules: vec![],
             is_default: false,
             mode: crate::engine::PolicyMode::Replace,
+            on_parse_error: crate::engine::ParseErrorPolicy::default(),
         };
 
         let exit_code = run_test_with_engine(&engine);
@@ -170,6 +175,7 @@ mod tests {
             }],
             is_default: false,
             mode: crate::engine::PolicyMode::Replace,
+            on_parse_error: crate::engine::ParseErrorPolicy::default(),
         };
 
         // Verify "docker push" and "docker login" are both denied

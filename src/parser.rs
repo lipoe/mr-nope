@@ -43,6 +43,18 @@ impl fmt::Display for ParseError {
     }
 }
 
+impl ParseError {
+    /// Stable name used in parse-error logs and deny messages.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            ParseError::UnclosedQuote => "UnclosedQuote",
+            ParseError::MalformedSubstitution => "MalformedSubstitution",
+            ParseError::NestingTooDeep => "NestingTooDeep",
+            ParseError::EmptyCommand => "EmptyCommand",
+        }
+    }
+}
+
 impl std::error::Error for ParseError {}
 
 /// The Parser handles structural analysis of shell commands.
@@ -286,10 +298,7 @@ impl Parser {
         }
 
         let command = tokens[0].clone();
-        let subcommand = tokens[1..]
-            .iter()
-            .find(|t| !t.starts_with('-'))
-            .cloned();
+        let subcommand = tokens[1..].iter().find(|t| !t.starts_with('-')).cloned();
 
         ParsedCommand {
             command,
@@ -948,8 +957,7 @@ mod tests {
 
         #[test]
         fn handles_nested_parentheses_in_dollar_paren() {
-            let result =
-                Parser::extract_substitutions("echo $(cmd $(inner))").unwrap();
+            let result = Parser::extract_substitutions("echo $(cmd $(inner))").unwrap();
             assert_eq!(result, vec!["cmd $(inner)"]);
         }
 
@@ -1030,8 +1038,7 @@ mod tests {
 
         #[test]
         fn handles_deeply_nested_parens() {
-            let result =
-                Parser::extract_substitutions("echo $(echo $(echo inner))").unwrap();
+            let result = Parser::extract_substitutions("echo $(echo $(echo inner))").unwrap();
             // The outer $( finds its matching ) which accounts for nested parens
             assert_eq!(result, vec!["echo $(echo inner)"]);
         }
@@ -1066,7 +1073,8 @@ mod tests {
 
         #[test]
         fn extracts_from_zsh_c() {
-            let result = Parser::extract_nested_shell("zsh -c \"git push origin main\"", 0).unwrap();
+            let result =
+                Parser::extract_nested_shell("zsh -c \"git push origin main\"", 0).unwrap();
             assert_eq!(result, vec!["git push origin main"]);
         }
 
@@ -1078,18 +1086,14 @@ mod tests {
 
         #[test]
         fn handles_two_levels_of_nesting() {
-            let result =
-                Parser::extract_nested_shell("sh -c \"bash -c 'git push'\"", 0).unwrap();
+            let result = Parser::extract_nested_shell("sh -c \"bash -c 'git push'\"", 0).unwrap();
             assert_eq!(result, vec!["git push"]);
         }
 
         #[test]
         fn handles_three_levels_of_nesting() {
-            let result = Parser::extract_nested_shell(
-                "sh -c \"bash -c 'zsh -c git push'\"",
-                0,
-            )
-            .unwrap();
+            let result =
+                Parser::extract_nested_shell("sh -c \"bash -c 'zsh -c git push'\"", 0).unwrap();
             assert_eq!(result, vec!["git push"]);
         }
 
@@ -1149,8 +1153,7 @@ mod tests {
 
         #[test]
         fn handles_path_qualified_shell() {
-            let result =
-                Parser::extract_nested_shell("/usr/bin/bash -c \"git push\"", 0).unwrap();
+            let result = Parser::extract_nested_shell("/usr/bin/bash -c \"git push\"", 0).unwrap();
             assert_eq!(result, vec!["git push"]);
         }
 
@@ -1164,8 +1167,7 @@ mod tests {
 
         #[test]
         fn leading_trailing_whitespace_trimmed() {
-            let result =
-                Parser::extract_nested_shell("  sh -c \"git push\"  ", 0).unwrap();
+            let result = Parser::extract_nested_shell("  sh -c \"git push\"  ", 0).unwrap();
             assert_eq!(result, vec!["git push"]);
         }
 
@@ -1179,8 +1181,7 @@ mod tests {
         #[test]
         fn three_levels_mixed_shells() {
             // sh -c wrapping bash -c wrapping zsh -c with an unquoted final arg
-            let result =
-                Parser::extract_nested_shell("sh -c \"bash -c 'zsh -c ls'\"", 0).unwrap();
+            let result = Parser::extract_nested_shell("sh -c \"bash -c 'zsh -c ls'\"", 0).unwrap();
             assert_eq!(result, vec!["ls"]);
         }
     }
@@ -1199,10 +1200,7 @@ mod tests {
         #[test]
         fn removes_comment_with_forbidden_command() {
             // A forbidden command after `#` should not be treated as executable
-            assert_eq!(
-                Parser::strip_comments("echo safe # git push"),
-                "echo safe"
-            );
+            assert_eq!(Parser::strip_comments("echo safe # git push"), "echo safe");
         }
 
         #[test]

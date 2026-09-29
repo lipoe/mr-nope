@@ -91,6 +91,7 @@ fn deny_malformed(reason: &str) -> HookResponse {
         permission: Permission::Deny,
         user_message: Some(user_message),
         agent_message: Some(agent_message),
+        notices: Vec::new(),
     }
 }
 
@@ -352,7 +353,10 @@ mod tests {
 
         // docker push should be DENIED by the custom policy
         let result = engine.evaluate("docker push");
-        assert!(matches!(result.decision, crate::engine::Decision::Deny { .. }));
+        assert!(matches!(
+            result.decision,
+            crate::engine::Decision::Deny { .. }
+        ));
     }
 
     #[test]
@@ -381,11 +385,17 @@ rules:
 
         // git push should still be DENIED (merged from default/global)
         let result = engine.evaluate("git push");
-        assert!(matches!(result.decision, crate::engine::Decision::Deny { .. }));
+        assert!(matches!(
+            result.decision,
+            crate::engine::Decision::Deny { .. }
+        ));
 
         // docker push should also be DENIED (from the extension)
         let result = engine.evaluate("docker push");
-        assert!(matches!(result.decision, crate::engine::Decision::Deny { .. }));
+        assert!(matches!(
+            result.decision,
+            crate::engine::Decision::Deny { .. }
+        ));
     }
 
     #[test]
@@ -415,11 +425,17 @@ rules:
 
         // git push - still denied
         let result = engine.evaluate("git push");
-        assert!(matches!(result.decision, crate::engine::Decision::Deny { .. }));
+        assert!(matches!(
+            result.decision,
+            crate::engine::Decision::Deny { .. }
+        ));
 
         // git merge - still denied
         let result = engine.evaluate("git merge");
-        assert!(matches!(result.decision, crate::engine::Decision::Deny { .. }));
+        assert!(matches!(
+            result.decision,
+            crate::engine::Decision::Deny { .. }
+        ));
 
         // git commit - NO LONGER denied (project replaces git subcommands, commit not listed)
         let result = engine.evaluate("git commit");

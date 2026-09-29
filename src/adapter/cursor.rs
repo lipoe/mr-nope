@@ -2,7 +2,7 @@
 // Implements the Adapter trait for Cursor's hook system.
 
 use crate::adapter::{Adapter, HookInput, HookResponse, Permission};
-use crate::engine::{Decision, DenyRule, PolicyEngine, PolicyEvaluator};
+use crate::engine::{Decision, DenyRule, ParseContext, PolicyEngine, PolicyEvaluator};
 use serde_json::Value;
 
 /// The Cursor adapter integrates Mr. Nope with Cursor's hook system.
@@ -31,21 +31,24 @@ impl CursorAdapter {
                 permission: Permission::Allow,
                 user_message: None,
                 agent_message: None,
+                notices: Vec::new(),
             };
         }
 
         let result = self.engine.evaluate(command);
+        let notices = result.notice.into_iter().collect();
 
         match result.decision {
             Decision::Allow => HookResponse {
                 permission: Permission::Allow,
                 user_message: None,
                 agent_message: None,
+                notices,
             },
             Decision::Deny {
                 rule,
                 matched_subcommand,
-            } => Self::deny_response(&rule, &matched_subcommand),
+            } => Self::deny_response(&rule, &matched_subcommand, notices),
         }
     }
 
@@ -64,6 +67,7 @@ impl CursorAdapter {
                 permission: Permission::Allow,
                 user_message: None,
                 agent_message: None,
+                notices: Vec::new(),
             };
         }
 
@@ -74,10 +78,13 @@ impl CursorAdapter {
                 return Self::deny_response(
                     &DenyRule {
                         command: "__parse_error__".to_string(),
-                        subcommands: vec!["MCP tool input could not be parsed as JSON for policy evaluation"
-                            .to_string()],
+                        subcommands: vec![
+                            "MCP tool input could not be parsed as JSON for policy evaluation"
+                                .to_string(),
+                        ],
                     },
                     "MCP tool input could not be parsed as JSON for policy evaluation",
+                    Vec::new(),
                 );
             }
         };
@@ -86,20 +93,26 @@ impl CursorAdapter {
         let mut strings: Vec<String> = Vec::new();
         Self::extract_strings(&json_value, &mut strings);
 
+        let mut notices = Vec::new();
         for string_value in &strings {
             // Skip empty/whitespace-only strings
             if string_value.trim().is_empty() {
                 continue;
             }
 
-            let result = self.engine.evaluate(string_value);
+            let result = self
+                .engine
+                .evaluate_in(string_value, ParseContext::ToolInput);
+            if let Some(notice) = result.notice {
+                notices.push(notice);
+            }
 
             if let Decision::Deny {
                 rule,
                 matched_subcommand,
             } = result.decision
             {
-                return Self::deny_response(&rule, &matched_subcommand);
+                return Self::deny_response(&rule, &matched_subcommand, notices);
             }
         }
 
@@ -108,6 +121,7 @@ impl CursorAdapter {
             permission: Permission::Allow,
             user_message: None,
             agent_message: None,
+            notices,
         }
     }
 
@@ -141,7 +155,11 @@ impl CursorAdapter {
     ///
     /// - `rule`: The deny rule that matched.
     /// - `matched_subcommand`: The specific subcommand that triggered the deny.
-    fn deny_response(rule: &DenyRule, matched_subcommand: &str) -> HookResponse {
+    fn deny_response(
+        rule: &DenyRule,
+        matched_subcommand: &str,
+        notices: Vec<String>,
+    ) -> HookResponse {
         let user_message = format!(
             "🚫 Mr. Nope blocked: {} {} (matched deny rule: {} [{}]). \
              Note: this protection applies only to AI agent execution via hooks, \
@@ -157,16 +175,14 @@ impl CursorAdapter {
              You must not execute this command or attempt to bypass this restriction. \
              The user configured Mr. Nope to deny '{} {}' operations. \
              Use 'mr-nope policy' to see all active deny rules.",
-            rule.command,
-            matched_subcommand,
-            rule.command,
-            matched_subcommand
+            rule.command, matched_subcommand, rule.command, matched_subcommand
         );
 
         HookResponse {
             permission: Permission::Deny,
             user_message: Some(user_message),
             agent_message: Some(agent_message),
+            notices,
         }
     }
 }
@@ -189,6 +205,7 @@ impl Adapter for CursorAdapter {
                             permission: Permission::Allow,
                             user_message: None,
                             agent_message: None,
+                            notices: Vec::new(),
                         }
                     }
                 }
@@ -202,6 +219,7 @@ impl Adapter for CursorAdapter {
                             permission: Permission::Allow,
                             user_message: None,
                             agent_message: None,
+                            notices: Vec::new(),
                         }
                     }
                 }
@@ -215,6 +233,7 @@ impl Adapter for CursorAdapter {
                         subcommands: vec![subcmd.clone()],
                     },
                     &subcmd,
+                    Vec::new(),
                 )
             }
         }
@@ -264,18 +283,15 @@ mod tests {
     #[test]
     fn test_mcp_safe_string_values_allows() {
         let adapter = default_adapter();
-        let response = adapter.handle_mcp_execution(
-            r#"{"command": "echo hello", "path": "/tmp/test"}"#,
-        );
+        let response =
+            adapter.handle_mcp_execution(r#"{"command": "echo hello", "path": "/tmp/test"}"#);
         assert_eq!(response.permission, Permission::Allow);
     }
 
     #[test]
     fn test_mcp_forbidden_command_in_string_denies() {
         let adapter = default_adapter();
-        let response = adapter.handle_mcp_execution(
-            r#"{"command": "git push origin main"}"#,
-        );
+        let response = adapter.handle_mcp_execution(r#"{"command": "git push origin main"}"#);
         assert_eq!(response.permission, Permission::Deny);
         assert!(response.user_message.is_some());
         let msg = response.user_message.unwrap();
@@ -283,20 +299,31 @@ mod tests {
     }
 
     #[test]
+    fn test_mcp_unparsed_file_text_allows_by_default() {
+        let adapter = default_adapter();
+        let response =
+            adapter.handle_mcp_execution(r#"{"path":"a.txt","text":"don't write this"}"#);
+        assert_eq!(response.permission, Permission::Allow);
+        assert!(response.notices.iter().any(|n| n.contains("action=allow")));
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            !json.contains("notices") && !json.contains("parse_error"),
+            "notices stay off the Cursor decision payload: {json}"
+        );
+    }
+
+    #[test]
     fn test_mcp_forbidden_command_in_nested_object_denies() {
         let adapter = default_adapter();
-        let response = adapter.handle_mcp_execution(
-            r#"{"outer": {"inner": {"cmd": "git commit -m test"}}}"#,
-        );
+        let response =
+            adapter.handle_mcp_execution(r#"{"outer": {"inner": {"cmd": "git commit -m test"}}}"#);
         assert_eq!(response.permission, Permission::Deny);
     }
 
     #[test]
     fn test_mcp_forbidden_command_in_array_denies() {
         let adapter = default_adapter();
-        let response = adapter.handle_mcp_execution(
-            r#"{"commands": ["echo hello", "git push"]}"#,
-        );
+        let response = adapter.handle_mcp_execution(r#"{"commands": ["echo hello", "git push"]}"#);
         assert_eq!(response.permission, Permission::Deny);
     }
 
@@ -313,36 +340,29 @@ mod tests {
     fn test_mcp_mixed_types_only_checks_strings() {
         let adapter = default_adapter();
         // Numbers, bools, nulls are skipped; only the string "ls -la" is checked
-        let response = adapter.handle_mcp_execution(
-            r#"{"a": 123, "b": null, "c": true, "d": "ls -la"}"#,
-        );
+        let response =
+            adapter.handle_mcp_execution(r#"{"a": 123, "b": null, "c": true, "d": "ls -la"}"#);
         assert_eq!(response.permission, Permission::Allow);
     }
 
     #[test]
     fn test_mcp_deeply_nested_array_denies() {
         let adapter = default_adapter();
-        let response = adapter.handle_mcp_execution(
-            r#"[[[["git push"]]]]"#,
-        );
+        let response = adapter.handle_mcp_execution(r#"[[[["git push"]]]]"#);
         assert_eq!(response.permission, Permission::Deny);
     }
 
     #[test]
     fn test_mcp_whitespace_only_string_values_allows() {
         let adapter = default_adapter();
-        let response = adapter.handle_mcp_execution(
-            r#"{"a": "   ", "b": ""}"#,
-        );
+        let response = adapter.handle_mcp_execution(r#"{"a": "   ", "b": ""}"#);
         assert_eq!(response.permission, Permission::Allow);
     }
 
     #[test]
     fn test_mcp_git_status_in_string_allows() {
         let adapter = default_adapter();
-        let response = adapter.handle_mcp_execution(
-            r#"{"command": "git status"}"#,
-        );
+        let response = adapter.handle_mcp_execution(r#"{"command": "git status"}"#);
         assert_eq!(response.permission, Permission::Allow);
     }
 
@@ -350,9 +370,7 @@ mod tests {
     fn test_mcp_first_deny_short_circuits() {
         let adapter = default_adapter();
         // First string is forbidden, should deny without needing to check second
-        let response = adapter.handle_mcp_execution(
-            r#"{"a": "git push", "b": "git commit"}"#,
-        );
+        let response = adapter.handle_mcp_execution(r#"{"a": "git push", "b": "git commit"}"#);
         assert_eq!(response.permission, Permission::Deny);
     }
 
@@ -465,8 +483,7 @@ mod tests {
 
     #[test]
     fn test_extract_strings_nested_objects() {
-        let json: Value =
-            serde_json::from_str(r#"{"outer": {"inner": "deep"}}"#).unwrap();
+        let json: Value = serde_json::from_str(r#"{"outer": {"inner": "deep"}}"#).unwrap();
         let mut strings = Vec::new();
         CursorAdapter::extract_strings(&json, &mut strings);
         assert_eq!(strings, vec!["deep".to_string()]);
@@ -474,8 +491,7 @@ mod tests {
 
     #[test]
     fn test_extract_strings_arrays() {
-        let json: Value =
-            serde_json::from_str(r#"["first", 2, "third"]"#).unwrap();
+        let json: Value = serde_json::from_str(r#"["first", 2, "third"]"#).unwrap();
         let mut strings = Vec::new();
         CursorAdapter::extract_strings(&json, &mut strings);
         assert_eq!(strings, vec!["first".to_string(), "third".to_string()]);
@@ -483,8 +499,7 @@ mod tests {
 
     #[test]
     fn test_extract_strings_deeply_nested() {
-        let json: Value =
-            serde_json::from_str(r#"{"a": [{"b": [{"c": "found"}]}]}"#).unwrap();
+        let json: Value = serde_json::from_str(r#"{"a": [{"b": [{"c": "found"}]}]}"#).unwrap();
         let mut strings = Vec::new();
         CursorAdapter::extract_strings(&json, &mut strings);
         assert_eq!(strings, vec!["found".to_string()]);

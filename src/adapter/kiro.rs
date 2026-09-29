@@ -14,7 +14,7 @@
 // resulting `HookResponse` into Kiro's exit-code contract.
 
 use crate::adapter::{Adapter, HookInput, HookResponse, Permission};
-use crate::engine::{Decision, DenyRule, PolicyEngine, PolicyEvaluator};
+use crate::engine::{Decision, DenyRule, ParseContext, PolicyEngine, PolicyEvaluator};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -70,10 +70,7 @@ impl KiroHookPayload {
             (command, None)
         } else {
             // Non-shell tool: re-serialize the whole tool_input for string scan.
-            let tool_input = self
-                .tool_input
-                .as_ref()
-                .map(|v| v.to_string());
+            let tool_input = self.tool_input.as_ref().map(|v| v.to_string());
             (None, tool_input)
         };
 
@@ -109,15 +106,17 @@ impl KiroAdapter {
     /// - Otherwise evaluate through Normalizer → Parser → PolicyEngine.
     pub fn handle_shell_execution(&self, command: &str) -> HookResponse {
         if command.trim().is_empty() {
-            return allow();
+            return allow(Vec::new());
         }
 
-        match self.engine.evaluate(command).decision {
-            Decision::Allow => allow(),
+        let result = self.engine.evaluate(command);
+        let notices = result.notice.into_iter().collect();
+        match result.decision {
+            Decision::Allow => allow(notices),
             Decision::Deny {
                 rule,
                 matched_subcommand,
-            } => Self::deny_response(&rule, &matched_subcommand),
+            } => Self::deny_response(&rule, &matched_subcommand, notices),
         }
     }
 
@@ -128,7 +127,7 @@ impl KiroAdapter {
     /// - If ANY string value triggers DENY → block the whole tool call.
     pub fn handle_tool_input(&self, tool_input: &str) -> HookResponse {
         if tool_input.trim().is_empty() {
-            return allow();
+            return allow(Vec::new());
         }
 
         let json_value: Value = match serde_json::from_str(tool_input) {
@@ -141,6 +140,7 @@ impl KiroAdapter {
                         subcommands: vec![reason.to_string()],
                     },
                     reason,
+                    Vec::new(),
                 );
             }
         };
@@ -148,20 +148,27 @@ impl KiroAdapter {
         let mut strings: Vec<String> = Vec::new();
         Self::extract_strings(&json_value, &mut strings);
 
+        let mut notices = Vec::new();
         for string_value in &strings {
             if string_value.trim().is_empty() {
                 continue;
             }
+            let result = self
+                .engine
+                .evaluate_in(string_value, ParseContext::ToolInput);
+            if let Some(notice) = result.notice {
+                notices.push(notice);
+            }
             if let Decision::Deny {
                 rule,
                 matched_subcommand,
-            } = self.engine.evaluate(string_value).decision
+            } = result.decision
             {
-                return Self::deny_response(&rule, &matched_subcommand);
+                return Self::deny_response(&rule, &matched_subcommand, notices);
             }
         }
 
-        allow()
+        allow(notices)
     }
 
     /// Recursively collect all string values from a JSON value tree.
@@ -183,7 +190,11 @@ impl KiroAdapter {
     }
 
     /// Build a deny response with rule information.
-    fn deny_response(rule: &DenyRule, matched_subcommand: &str) -> HookResponse {
+    fn deny_response(
+        rule: &DenyRule,
+        matched_subcommand: &str,
+        notices: Vec<String>,
+    ) -> HookResponse {
         let user_message = format!(
             "🚫 Mr. Nope blocked: {} {} (matched deny rule: {} [{}]). \
              Note: this protection applies only to AI agent execution via hooks, \
@@ -199,26 +210,25 @@ impl KiroAdapter {
              You must not execute this command or attempt to bypass this restriction. \
              The user configured Mr. Nope to deny '{} {}' operations. \
              Use 'mr-nope policy' to see all active deny rules.",
-            rule.command,
-            matched_subcommand,
-            rule.command,
-            matched_subcommand
+            rule.command, matched_subcommand, rule.command, matched_subcommand
         );
 
         HookResponse {
             permission: Permission::Deny,
             user_message: Some(user_message),
             agent_message: Some(agent_message),
+            notices,
         }
     }
 }
 
-/// A plain allow response with no messages.
-fn allow() -> HookResponse {
+/// A plain allow response with no block message. Parse-error notes ride along.
+fn allow(notices: Vec<String>) -> HookResponse {
     HookResponse {
         permission: Permission::Allow,
         user_message: None,
         agent_message: None,
+        notices,
     }
 }
 
@@ -239,13 +249,13 @@ impl Adapter for KiroAdapter {
         if is_shell {
             return match &input.command {
                 Some(cmd) => self.handle_shell_execution(cmd),
-                None => allow(),
+                None => allow(Vec::new()),
             };
         }
 
         match &input.tool_input {
             Some(tool_input) => self.handle_tool_input(tool_input),
-            None => allow(),
+            None => allow(Vec::new()),
         }
     }
 }
@@ -274,10 +284,9 @@ mod tests {
 
     #[test]
     fn test_payload_shell_alias_tool_extracts_command() {
-        let payload: KiroHookPayload = serde_json::from_str(
-            r#"{"tool_name": "shell", "tool_input": {"command": "echo hi"}}"#,
-        )
-        .unwrap();
+        let payload: KiroHookPayload =
+            serde_json::from_str(r#"{"tool_name": "shell", "tool_input": {"command": "echo hi"}}"#)
+                .unwrap();
         let input = payload.into_hook_input();
         assert_eq!(input.command.as_deref(), Some("echo hi"));
     }
@@ -307,7 +316,10 @@ mod tests {
     #[test]
     fn test_shell_empty_command_allows() {
         let adapter = default_adapter();
-        assert_eq!(adapter.handle_shell_execution("").permission, Permission::Allow);
+        assert_eq!(
+            adapter.handle_shell_execution("").permission,
+            Permission::Allow
+        );
         assert_eq!(
             adapter.handle_shell_execution("   \t ").permission,
             Permission::Allow
@@ -351,8 +363,7 @@ mod tests {
     #[test]
     fn test_tool_input_safe_values_allow() {
         let adapter = default_adapter();
-        let response =
-            adapter.handle_tool_input(r#"{"path": "/tmp/a", "text": "hello world"}"#);
+        let response = adapter.handle_tool_input(r#"{"path": "/tmp/a", "text": "hello world"}"#);
         assert_eq!(response.permission, Permission::Allow);
     }
 
@@ -364,10 +375,54 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_input_unparsed_text_allows_by_default() {
+        let adapter = default_adapter();
+        let response = adapter.handle_tool_input(r#"{"path":"a.txt","text":"don't write this"}"#);
+        assert_eq!(response.permission, Permission::Allow);
+        assert!(response.agent_message.is_none());
+        assert!(
+            response
+                .notices
+                .iter()
+                .any(|n| n.contains("action=allow") && n.contains("kind=UnclosedQuote")),
+            "the allow response carries the parse-error notice: {:?}",
+            response.notices
+        );
+    }
+
+    #[test]
+    fn test_tool_input_unparsed_text_does_not_hide_another_deny() {
+        let adapter = default_adapter();
+        let response = adapter.handle_tool_input(r#"{"items":["don't write this","git push"]}"#);
+        assert_eq!(response.permission, Permission::Deny);
+        assert!(
+            response
+                .notices
+                .iter()
+                .any(|n| n.contains("kind=UnclosedQuote")),
+            "a later deny keeps the earlier parse-error notice"
+        );
+        assert!(response.agent_message.unwrap().contains("BLOCKED"));
+    }
+
+    #[test]
+    fn test_shell_unclosed_quote_denies_by_default() {
+        let adapter = default_adapter();
+        let response = adapter.handle_shell_execution("git push \"");
+        assert_eq!(response.permission, Permission::Deny);
+        let message = response.agent_message.unwrap();
+        assert!(message.contains("UnclosedQuote"));
+        assert!(message.contains("BLOCKED"));
+        assert!(
+            response.notices.iter().any(|n| n.contains("action=deny")),
+            "the deny response carries the parse-error notice"
+        );
+    }
+
+    #[test]
     fn test_tool_input_nested_forbidden_denies() {
         let adapter = default_adapter();
-        let response =
-            adapter.handle_tool_input(r#"{"outer": {"inner": ["git push"]}}"#);
+        let response = adapter.handle_tool_input(r#"{"outer": {"inner": ["git push"]}}"#);
         assert_eq!(response.permission, Permission::Deny);
     }
 
@@ -455,8 +510,7 @@ mod tests {
 
     #[test]
     fn test_extract_strings_nested() {
-        let json: Value =
-            serde_json::from_str(r#"{"a": [{"b": "found"}], "c": 3}"#).unwrap();
+        let json: Value = serde_json::from_str(r#"{"a": [{"b": "found"}], "c": 3}"#).unwrap();
         let mut strings = Vec::new();
         KiroAdapter::extract_strings(&json, &mut strings);
         assert_eq!(strings, vec!["found".to_string()]);

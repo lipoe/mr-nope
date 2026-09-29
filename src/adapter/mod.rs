@@ -40,6 +40,10 @@ pub struct HookResponse {
     /// Message sent to the AI agent (present on deny).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_message: Option<String>,
+    /// Parse-error notes. The integration shell writes them to stderr.
+    /// They are not part of the decision payload sent to the agent.
+    #[serde(skip)]
+    pub notices: Vec<String>,
 }
 
 /// The permission decision returned by an adapter.

@@ -146,6 +146,26 @@ rules:
 
 If the global policy denies `git [commit, push, merge, rebase]` and the project extends with `git [push, merge]`, then only `git push` and `git merge` are blocked for git — `commit` and `rebase` are no longer blocked in this project. The `docker push` rule is added on top.
 
+### Parse errors
+
+When a string cannot be parsed as a shell command, Mr. Nope writes one stderr line and then follows `on_parse_error`. The line names the hook path, the parser failure (`UnclosedQuote`, `MalformedSubstitution`, `NestingTooDeep`), the action taken, and a short preview. It is a note, not the block message.
+
+```yaml
+on_parse_error:
+  shell: deny        # shell commands. Default: block.
+  tool_input: allow  # file bodies and other non-shell tool strings. Default: allow.
+```
+
+`deny` blocks that call. `allow` lets the unparsable string through. A string that parses and matches a deny rule is still blocked. Self-protection is not affected by this setting.
+
+With `mode: extend`, each field the project sets overrides the base policy; omitted fields are inherited. With `mode: replace` (or when the key is absent), omitted fields use the defaults above.
+
+```
+mr-nope: parse_error context=tool_input kind=UnclosedQuote action=allow preview="don't write this"
+```
+
+On allow, that line is the only stderr output. The `BLOCKED` message is written only when the decision is deny.
+
 ### Default Policy
 
 Without any custom policy file, Mr. Nope blocks:
@@ -187,7 +207,7 @@ Mr. Nope detects forbidden commands even when disguised through these techniques
 | Nested shell (1 level) | `sh -c "git push"` | ✅ Inner command extracted |
 | Nested shell (2 levels) | `bash -c "sh -c 'git push'"` | ✅ Recursive extraction |
 | Nested shell (3 levels) | `sh -c "bash -c 'zsh -c git push'"` | ✅ Max depth supported |
-| Nested shell (4+ levels) | 4+ layers of sh -c | ❌ Denied (NestingTooDeep = fail-closed) |
+| Nested shell (4+ levels) | 4+ layers of sh -c | ❌ Denied by default (`on_parse_error.shell: deny`) |
 | Prefix: `command` | `command git push` | ✅ Prefix stripped |
 | Prefix: `exec` | `exec git push` | ✅ Prefix stripped |
 | Prefix: `env` | `env FOO=bar git push` | ✅ Prefix + vars stripped |

@@ -1,6 +1,6 @@
 // Mr. Nope - Unit tests (example-based)
 
+mod adapter;
+mod engine;
 mod normalizer;
 mod parser;
-mod engine;
-mod adapter;

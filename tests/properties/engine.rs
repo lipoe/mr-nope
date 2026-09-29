@@ -1,7 +1,9 @@
 // Property tests for the Policy Engine
 // Properties 1, 2, 12, 13, 14, 21
 
-use mr_nope::engine::{Decision, DenyRule, PolicyEngine, PolicyEvaluator, PolicyMode};
+use mr_nope::engine::{
+    Decision, DenyRule, ParseErrorPolicy, PolicyEngine, PolicyEvaluator, PolicyMode,
+};
 use mr_nope::parser::ParsedCommand;
 use proptest::prelude::*;
 
@@ -30,13 +32,19 @@ fn valid_command_string() -> impl Strategy<Value = String> {
 /// Generate a valid YAML policy string with arbitrary rules.
 fn valid_policy_yaml() -> impl Strategy<Value = String> {
     prop::collection::vec(
-        (command_token(), prop::collection::vec(command_token(), 1..=4)),
+        (
+            command_token(),
+            prop::collection::vec(command_token(), 1..=4),
+        ),
         1..=5,
     )
     .prop_map(|rules| {
         let mut yaml = String::from("rules:\n");
         for (cmd, subcmds) in rules {
-            yaml.push_str(&format!("  - deny:\n      command: \"{}\"\n      subcommands:\n", cmd));
+            yaml.push_str(&format!(
+                "  - deny:\n      command: \"{}\"\n      subcommands:\n",
+                cmd
+            ));
             for sub in subcmds {
                 yaml.push_str(&format!("        - \"{}\"\n", sub));
             }
@@ -179,6 +187,7 @@ proptest! {
             }],
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let parsed = ParsedCommand {
@@ -217,6 +226,7 @@ proptest! {
             }],
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let parsed = ParsedCommand {
@@ -258,6 +268,7 @@ proptest! {
             }],
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let parsed = ParsedCommand {
@@ -291,6 +302,7 @@ proptest! {
             }],
             is_default: false,
             mode: PolicyMode::Replace,
+            on_parse_error: ParseErrorPolicy::default(),
         };
 
         let parsed = ParsedCommand {
