@@ -21,7 +21,7 @@
 // stable core and is reused unchanged.
 
 use crate::adapter::cursor::CursorAdapter;
-use crate::adapter::kiro::{KiroAdapter, KiroHookPayload};
+use crate::adapter::kiro::{KiroAdapter, KiroHookPayload, kiro_tool_matcher};
 use crate::adapter::{Adapter, HookInput, HookResponse, Permission};
 use crate::engine::PolicyEngine;
 use serde_json::{Value, json};
@@ -467,10 +467,6 @@ impl AgentIntegration for CursorIntegration {
 /// Filename of the dedicated Kiro hook file that Mr. Nope owns.
 const KIRO_HOOK_FILE_NAME: &str = "mr-nope.json";
 
-/// Regex matcher for the Kiro tool names Mr. Nope guards: shell execution and
-/// file writes across CLI/IDE surfaces.
-const KIRO_TOOL_MATCHER: &str = "execute_bash|shell|fs_write|write";
-
 /// Integrates Mr. Nope with Kiro.
 ///
 /// Kiro reads standalone hook files with a versioned schema, so Mr. Nope owns a
@@ -498,7 +494,7 @@ impl KiroIntegration {
                 {
                     "name": "Mr. Nope",
                     "trigger": "PreToolUse",
-                    "matcher": KIRO_TOOL_MATCHER,
+                    "matcher": kiro_tool_matcher(),
                     "action": { "type": "command", "command": hook_command }
                 }
             ]
@@ -696,7 +692,7 @@ mod tests {
         let entry = &hook["hooks"][0];
         assert_eq!(entry["name"], "Mr. Nope");
         assert_eq!(entry["trigger"], "PreToolUse");
-        assert_eq!(entry["matcher"], KIRO_TOOL_MATCHER);
+        assert_eq!(entry["matcher"], kiro_tool_matcher());
         assert_eq!(entry["action"]["type"], "command");
         assert!(
             entry["action"]["command"]

@@ -20,9 +20,35 @@ use serde_json::Value;
 
 /// Kiro tool names that carry a shell command in `tool_input.command`.
 ///
-/// Kiro's built-in shell tool has been seen as both `execute_bash` and `shell`
-/// across CLI/IDE surfaces; we treat both as shell-execution tools.
-const KIRO_SHELL_TOOLS: &[&str] = &["execute_bash", "shell"];
+/// `execute_bash` is the canonical name. `shell` and `execute_cmd` are its aliases.
+/// A name belongs here only when the payload's command is that one field. Other
+/// fields are not scanned for these tools.
+pub const KIRO_SHELL_TOOLS: &[&str] = &["execute_bash", "shell", "execute_cmd"];
+
+/// Kiro tool names whose whole `tool_input` is scanned as strings.
+///
+/// File tools change workspace contents. `control_bash_process` starts or stops a
+/// process, but its parameters are not a single `command` field, so it is scanned
+/// like a file tool instead of being routed as a shell command.
+pub const KIRO_SCANNED_TOOLS: &[&str] = &[
+    "fs_write",
+    "write",
+    "fs_append",
+    "str_replace",
+    "delete_file",
+    "control_bash_process",
+];
+
+/// Regex matcher for the PreToolUse hook. Built from the two lists above so a
+/// newly guarded tool cannot be routed and then left out of the hook.
+pub fn kiro_tool_matcher() -> String {
+    KIRO_SHELL_TOOLS
+        .iter()
+        .chain(KIRO_SCANNED_TOOLS.iter())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("|")
+}
 
 /// The raw `PreToolUse` payload Kiro writes to a hook command's stdin.
 ///
@@ -49,9 +75,9 @@ pub struct KiroHookPayload {
 impl KiroHookPayload {
     /// Convert the native Kiro payload into the shared [`HookInput`] model.
     ///
-    /// Shell tools (`execute_bash`, `shell`) surface their command string in the
-    /// `command` field; every other tool has its entire `tool_input` serialized
-    /// back into a JSON string so the adapter can scan all string values.
+    /// Shell tools surface their command string in the `command` field; every
+    /// other guarded tool has its entire `tool_input` serialized back into a
+    /// JSON string so the adapter can scan all string values.
     pub fn into_hook_input(self) -> HookInput {
         let tool_name = self.tool_name.clone();
         let is_shell = tool_name
@@ -100,7 +126,7 @@ impl KiroAdapter {
         Self { engine }
     }
 
-    /// Evaluate a shell command from a shell tool (`execute_bash`/`shell`).
+    /// Evaluate a shell command from a shell tool (`execute_bash` and its aliases).
     ///
     /// - Empty/whitespace-only command → permit without evaluation.
     /// - Otherwise evaluate through Normalizer → Parser → PolicyEngine.
@@ -236,7 +262,7 @@ impl Adapter for KiroAdapter {
     /// Process a hook event and return a response.
     ///
     /// Kiro fires a single `PreToolUse` trigger; routing is by `tool_name`:
-    /// - shell tools (`execute_bash`/`shell`) → evaluate the command string.
+    /// - shell tools (`execute_bash` and its aliases) → evaluate the command string.
     /// - any other tool with `tool_input` → scan all string values.
     /// - a shell tool with no command, or a tool with no input → permit.
     fn handle_hook(&self, input: &HookInput) -> HookResponse {
@@ -280,6 +306,48 @@ mod tests {
         assert_eq!(input.command.as_deref(), Some("git push"));
         assert!(input.tool_input.is_none());
         assert_eq!(input.tool_name.as_deref(), Some("execute_bash"));
+    }
+
+    #[test]
+    fn test_payload_execute_cmd_alias_extracts_command() {
+        let payload: KiroHookPayload = serde_json::from_str(
+            r#"{"tool_name": "execute_cmd", "tool_input": {"command": "git push"}}"#,
+        )
+        .unwrap();
+        let input = payload.into_hook_input();
+        assert_eq!(input.command.as_deref(), Some("git push"));
+        assert!(input.tool_input.is_none());
+    }
+
+    #[test]
+    fn test_payload_fs_append_is_scanned_not_treated_as_shell() {
+        let payload: KiroHookPayload = serde_json::from_str(
+            r#"{"tool_name": "fs_append", "tool_input": {"path": "a.txt", "text": "git push"}}"#,
+        )
+        .unwrap();
+        let input = payload.into_hook_input();
+        assert!(input.command.is_none());
+        assert!(input.tool_input.unwrap().contains("git push"));
+    }
+
+    #[test]
+    fn test_tool_matcher_is_shell_tools_plus_scanned_tools() {
+        let matcher = kiro_tool_matcher();
+        let parts: Vec<&str> = matcher.split('|').collect();
+        let expected: Vec<&str> = KIRO_SHELL_TOOLS
+            .iter()
+            .chain(KIRO_SCANNED_TOOLS.iter())
+            .copied()
+            .collect();
+        assert_eq!(parts, expected);
+        assert!(expected.contains(&"execute_cmd"));
+        assert!(expected.contains(&"fs_append"));
+        assert!(expected.contains(&"str_replace"));
+        assert!(expected.contains(&"delete_file"));
+        assert!(expected.contains(&"control_bash_process"));
+        assert!(!expected.contains(&"create_hook"));
+        assert!(!expected.contains(&"get_process_output"));
+        assert!(!expected.contains(&"list_processes"));
     }
 
     #[test]

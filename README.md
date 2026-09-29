@@ -292,7 +292,7 @@ Requires Node.js 18+ for the npx wrapper. The binary itself has no runtime depen
 ## Supported Adapters
 
 - **Cursor** — via `beforeShellExecution` and `beforeMCPExecution` hooks. Decisions are returned as a JSON response on stdout.
-- **Kiro** — via a `PreToolUse` hook that matches shell-execution and file-write tools (`execute_bash`, `shell`, `fs_write`, `write`). Decisions are returned through the process exit code (`0` = allow, `2` = block), with the block reason on stderr — matching [Kiro's hook contract](https://kiro.dev/docs/hooks/).
+- **Kiro** — via a `PreToolUse` hook. Shell tools (`execute_bash`, `shell`, `execute_cmd`) are evaluated as commands. File and process tools (`fs_write`, `write`, `fs_append`, `str_replace`, `delete_file`, `control_bash_process`) have every string parameter scanned. Decisions are returned through the process exit code (`0` = allow, `2` = block), with the block reason on stderr — matching [Kiro's hook contract](https://kiro.dev/docs/hooks/). `create_hook` is not matched: an agent can use it to install a hook that does not run Mr. Nope.
 
 Both agents share the same deterministic policy pipeline (Normalizer → Parser → Policy Engine); only the integration details differ.
 
