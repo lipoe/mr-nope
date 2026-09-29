@@ -1,6 +1,6 @@
 {
   "name": "@mr-nope/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Deterministic guardrail tool for AI coding agents — prevents forbidden operations like git commit and git push",
   "repository": {
     "type": "git",
